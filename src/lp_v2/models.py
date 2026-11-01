@@ -44,7 +44,8 @@ class Market:
     fees_enabled: bool
     rewards_enabled: bool
     political: bool
-    in_play: bool
+    in_play: bool | None
+    accepting_orders: bool
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,311 @@
+{
+  "metadata": {
+    "upstream_repository": "https://github.com/warproxxx/poly-maker",
+    "upstream_commit": "4f32103591c9582ccd012bdf10f77d86e5879444",
+    "original_source": "src/polymaker/catalog/scoring.py",
+    "original_source_sha256": "b6e829e1c78ac2de12e8e28d38f6a201e9c4826bf302a7d16b469e79df73bb9e",
+    "generated_at": "2026-11-01T16:34:07.311097+00:00",
+    "generator_command": ".venv/bin/python .task-evidence/M2-C04/generate_scores.py",
+    "generator_script_sha256": "c2d4aee96d144e3dc37a9f76414c3162408b7d1ce0937a466d65fa5beff12a98",
+    "snapshot_sha256": "2a3ddedc9eddb7486d8f895754732a94c098a4d2b5b1a66e8077dd4c70f6daec",
+    "method": "Execute the original module AST with only the polymaker.domain import removed and MarketMeta supplied as SimpleNamespace. All five function ASTs and MarketScore remain unchanged. No lp_v2 imports."
+  },
+  "scores": {
+    "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "0x16c63b7cc37f012b9f59ee164ec03877914c701d06d48291ae8d6fc08a088b0d": {
+      "condition_id": "0x16c63b7cc37f012b9f59ee164ec03877914c701d06d48291ae8d6fc08a088b0d",
+      "reward_density": 0.044,
+      "rebate_potential": 1742.07,
+      "spread": 0.01,
+      "extremity": 0.43,
+      "score": 0.049
+    },
+    "0x998bc71817b2d76921d1999ce0f3431cfd5945583667a371280ca2b430b0c06e": {
+      "condition_id": "0x998bc71817b2d76921d1999ce0f3431cfd5945583667a371280ca2b430b0c06e",
+      "reward_density": 0.072,
+      "rebate_potential": 3423.45,
+      "spread": 0.01,
+      "extremity": 0.55,
+      "score": 0.1288
+    },
+    "0x5512bfa9294bf914063ed120969908dee5cdf6e14293f28ca405d3ce4edcf485": {
+      "condition_id": "0x5512bfa9294bf914063ed120969908dee5cdf6e14293f28ca405d3ce4edcf485",
+      "reward_density": 2.113,
+      "rebate_potential": 654.02,
+      "spread": 0.01,
+      "extremity": 0.65,
+      "score": 2.0312
+    },
+    "0x94521176f57d2ce81dde01e0b7699ca4279423042d37ed53908f0c8bfefe7e14": {
+      "condition_id": "0x94521176f57d2ce81dde01e0b7699ca4279423042d37ed53908f0c8bfefe7e14",
+      "reward_density": 0.07,
+      "rebate_potential": 2399.98,
+      "spread": 0.01,
+      "extremity": 0.39,
+      "score": 0.1727
+    },
+    "0x34918035a590555ba1fb1d6a019d766ab6e557d63e7f3140b63b4550eee7f417": {
+      "condition_id": "0x34918035a590555ba1fb1d6a019d766ab6e557d63e7f3140b63b4550eee7f417",
+      "reward_density": 0.082,
+      "rebate_potential": 839.69,
+      "spread": 0.01,
+      "extremity": 0.41,
+      "score": 0.1053
+    },
+    "0xd0590fb2d44c3b5deb053fde7072206ee9041441e3ee0e5fb022a41caf79b407": {
+      "condition_id": "0xd0590fb2d44c3b5deb053fde7072206ee9041441e3ee0e5fb022a41caf79b407",
+      "reward_density": 2.156,
+      "rebate_potential": 2288.31,
+      "spread": 0.01,
+      "extremity": 0.65,
+      "score": 3.7895
+    },
+    "0xd50c016598c499fceea10a1a714e48d9b4953487fe215daeaf916068fae722f1": {
+      "condition_id": "0xd50c016598c499fceea10a1a714e48d9b4953487fe215daeaf916068fae722f1",
+      "reward_density": 0.061,
+      "rebate_potential": 1559.04,
+      "spread": 0.01,
+      "extremity": 0.15,
+      "score": 0.3754
+    },
+    "0x307a1ed89d60b61002dd5bbf00e1408c5ed2ab3fcdb056191ca7ef9bc34d38f3": {
+      "condition_id": "0x307a1ed89d60b61002dd5bbf00e1408c5ed2ab3fcdb056191ca7ef9bc34d38f3",
+      "reward_density": 0.063,
+      "rebate_potential": 687.4,
+      "spread": 0.01,
+      "extremity": 0.45,
+      "score": 0.0595
+    },
+    "0xbfeb6d4cf3eab6071e204219b0647c8224d63a12778df467311b5f2a4b3a5bd4": {
+      "condition_id": "0xbfeb6d4cf3eab6071e204219b0647c8224d63a12778df467311b5f2a4b3a5bd4",
+      "reward_density": 0.097,
+      "rebate_potential": 419.15,
+      "spread": 0.01,
+      "extremity": 0.63,
+      "score": 0.0943
+    },
+    "0x86bfb53af7250a40928975c551d12c185b762fa4ce0b40c6a64a50c946d72587": {
+      "condition_id": "0x86bfb53af7250a40928975c551d12c185b762fa4ce0b40c6a64a50c946d72587",
+      "reward_density": 0.052,
+      "rebate_potential": 1557.1,
+      "spread": 0.01,
+      "extremity": 0.43,
+      "score": 0.069
+    },
+    "0x38a1025bfc56539ed1ff8fdd468283d55cf9002412decd61aa8d6c578c7d01a2": {
+      "condition_id": "0x38a1025bfc56539ed1ff8fdd468283d55cf9002412decd61aa8d6c578c7d01a2",
+      "reward_density": 0.056,
+      "rebate_potential": 874.45,
+      "spread": 0.01,
+      "extremity": 0.17,
+      "score": 0.2098
+    },
+    "0xce610556ec78cfd7894f4169d91fe70e31c2fb49f927fffd7fe7d06530f88d56": {
+      "condition_id": "0xce610556ec78cfd7894f4169d91fe70e31c2fb49f927fffd7fe7d06530f88d56",
+      "reward_density": 0.04,
+      "rebate_potential": 1443.4,
+      "spread": 0.001,
+      "extremity": 0.625,
+      "score": 0.3764
+    },
+    "0x3fd189cac9280dfc49a07115581e8d4c9e0b7e1c1e8580a44e9ff3d74e39cf2d": {
+      "condition_id": "0x3fd189cac9280dfc49a07115581e8d4c9e0b7e1c1e8580a44e9ff3d74e39cf2d",
+      "reward_density": 0.159,
+      "rebate_potential": 1343.86,
+      "spread": 0.01,
+      "extremity": 0.61,
+      "score": 0.298
+    },
+    "0xcceae66d81c60f90c9679ab531b865bd7e9f95cc54f7b0634a24095519b10d65": {
+      "condition_id": "0xcceae66d81c60f90c9679ab531b865bd7e9f95cc54f7b0634a24095519b10d65",
+      "reward_density": 0.073,
+      "rebate_potential": 539.15,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.1773
+    },
+    "0xcd953913ecd5bf5387092bf447fe13190871b2bc9436c85b0918b4767c3fa58a": {
+      "condition_id": "0xcd953913ecd5bf5387092bf447fe13190871b2bc9436c85b0918b4767c3fa58a",
+      "reward_density": 0.083,
+      "rebate_potential": 473.77,
+      "spread": 0.001,
+      "extremity": 0.369,
+      "score": 0.2061
+    },
+    "0x3babe91f8d2fac44027f9ba7f0f1a59e61b72419828e6e517f96bbcf4e132498": {
+      "condition_id": "0x3babe91f8d2fac44027f9ba7f0f1a59e61b72419828e6e517f96bbcf4e132498",
+      "reward_density": 0.126,
+      "rebate_potential": 217.02,
+      "spread": 0.01,
+      "extremity": 0.61,
+      "score": 0.1154
+    },
+    "0x460d3942d385cdeda20519c0c5ad804ae48dc18efc9a82e1f1be87a29e69adb3": {
+      "condition_id": "0x460d3942d385cdeda20519c0c5ad804ae48dc18efc9a82e1f1be87a29e69adb3",
+      "reward_density": 0.089,
+      "rebate_potential": 516.23,
+      "spread": 0.01,
+      "extremity": 0.05,
+      "score": 0.1726
+    },
+    "0x174ea87d011bfd0b230efc45e0b4d0756d38af91f0ffbab70013a582603c2be8": {
+      "condition_id": "0x174ea87d011bfd0b230efc45e0b4d0756d38af91f0ffbab70013a582603c2be8",
+      "reward_density": 0.009,
+      "rebate_potential": 937.17,
+      "spread": 0.01,
+      "extremity": 0.77,
+      "score": 0.0837
+    },
+    "0xdbe93b5a701f36076a560fa4b9ba59e365a6e8e2ea6a83764640010657277ca4": {
+      "condition_id": "0xdbe93b5a701f36076a560fa4b9ba59e365a6e8e2ea6a83764640010657277ca4",
+      "reward_density": 0.803,
+      "rebate_potential": 0.0,
+      "spread": 0.002,
+      "extremity": 0.262,
+      "score": 0.6709
+    },
+    "synthetic:positive_control": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "synthetic:rewards_closed": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "synthetic:nonbinary": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "synthetic:mid_lower_endpoint": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.8,
+      "score": 0.4292
+    },
+    "synthetic:mid_just_below": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.8,
+      "score": 0.4292
+    },
+    "synthetic:mid_upper_endpoint": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.8,
+      "score": 0.4292
+    },
+    "synthetic:mid_just_above": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.8,
+      "score": 0.4292
+    },
+    "synthetic:liquidity_endpoint": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 300.0,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 106.875
+    },
+    "synthetic:liquidity_just_below": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 300.0,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 106.875
+    },
+    "synthetic:nonpolitical": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "synthetic:in_play": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "synthetic:accepting_orders_false": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "synthetic:in_play_unknown": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.6116
+    },
+    "synthetic:no_positive_reward": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.0,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.0
+    },
+    "synthetic:no_reward_band": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.0,
+      "rebate_potential": 0.0,
+      "spread": 0.01,
+      "extremity": 0.29,
+      "score": 0.0
+    },
+    "synthetic:missing_bid": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 1.0,
+      "extremity": 0.0,
+      "score": 0.0409
+    },
+    "synthetic:missing_ask": {
+      "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "reward_density": 0.858,
+      "rebate_potential": 0.0,
+      "spread": 1.0,
+      "extremity": 0.0,
+      "score": 0.0409
+    }
+  }
+}
