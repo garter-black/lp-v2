@@ -1,0 +1,1995 @@
+{
+  "metadata": {
+    "upstream_repository": "https://github.com/warproxxx/poly-maker",
+    "upstream_commit": "4f32103591c9582ccd012bdf10f77d86e5879444",
+    "source_sha256": {
+      "scoring.py": "b6e829e1c78ac2de12e8e28d38f6a201e9c4826bf302a7d16b469e79df73bb9e",
+      "domain.py": "b789da5d5e77569618796ee2282dc703c48b2b9aa249105cbdcad4aefaea37d3",
+      "gamma.py": "6df9fdfabcbaf57e54711da6141989dcd3cd2fee8df5c161fba58c37b803928f",
+      "LICENSE": "f78915195214735ea980dbab4926c5a8b7c960efad291bcf3a87fe740bb42090"
+    },
+    "captures": [
+      {
+        "name": "politics-tag.json",
+        "url": "https://gamma-api.polymarket.com/tags/slug/politics",
+        "exit_code": 0,
+        "error": "",
+        "time": "2026-11-01T16:00:41.496028+00:00"
+      },
+      {
+        "name": "politics-markets-raw.json",
+        "url": "https://gamma-api.polymarket.com/markets?tag_id=2&related_tags=true&limit=100&active=true&closed=false&order=volume24hr&ascending=false",
+        "exit_code": 0,
+        "error": "",
+        "time": "2026-11-01T16:00:43.069148+00:00",
+        "bytes": 755296,
+        "sha256": "5fcf8afe97dde1cf61c694ab12560d9cf17e4b723aaf5213de6b9166501c8faa"
+      },
+      {
+        "name": "sampling-markets-raw.json",
+        "url": "https://clob.polymarket.com/sampling-markets",
+        "exit_code": 0,
+        "error": "",
+        "time": "2026-11-01T16:00:44.983977+00:00",
+        "bytes": 2574042,
+        "sha256": "29afd69df0c2f1a67f12f6e89dcdc9b136b95090f165a4d6295818c49cdc659e"
+      }
+    ],
+    "generated_at": "2026-11-01T16:34:03.289340+00:00",
+    "generator_command": ".venv/bin/python .task-evidence/M2-C04/build_snapshot.py",
+    "raw_evidence": "LP-V2-M2-IMPL-t726u/evidence/upstream (task evidence; no test/runtime dependency)",
+    "normalization": [
+      "Choose the 20 explicitly matched candidates in fixture-source-analysis.json; retain original condition/token IDs and titles.",
+      "Match Gamma conditionId to CLOB condition_id, then the explicit USDC reward asset entry. The saved sampling page is partial; absence never means rewards disabled.",
+      "Score float fields follow gamma.py parse_market at the recorded upstream commit, including CLOB 24h volume preference and rounded taker fee basis points.",
+      "Execution tick/minimum fields are decimal strings, converted to Decimal by test loading; scoring reference values remain floats.",
+      "Political comes from the captured CLOB Politics tag. accepting_orders requires explicit true in both captures. Missing inPlay remains null/unknown.",
+      "Synthetic controls and counterexamples retain the base condition ID, carry distinct fixture IDs, and enumerate every changed field relative to their named base."
+    ]
+  },
+  "markets": [
+    {
+      "fixture_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+      "question": "Will Benjamin Netanyahu be the next Prime Minister of Israel?",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "682705",
+        "gamma_condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "clob_condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "gamma_index": 3,
+        "sampling_index": 231,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 3000
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "Middle East",
+          "Israel",
+          "Global Elections",
+          "Geopolitics",
+          "World Elections",
+          "World",
+          "Trump-Netanyahu",
+          "Main Election",
+          "Israel Election"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x16c63b7cc37f012b9f59ee164ec03877914c701d06d48291ae8d6fc08a088b0d",
+      "question": "2026 Balance of Power: D Senate, D House",
+      "market": {
+        "condition_id": "0x16c63b7cc37f012b9f59ee164ec03877914c701d06d48291ae8d6fc08a088b0d",
+        "tokens": [
+          {
+            "token_id": "34722410608062854697106861099776685947172185964394483545370684749662285977831",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "24483563228660028121020430722896740519524131851526579619586176931221901842798",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.71,
+        "best_ask": 0.72,
+        "liquidity_num": 5662023.7034,
+        "volume_24hr": 611253.53673,
+        "rewards_daily_rate": 2500.0,
+        "rewards_max_spread": 4.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "562828",
+        "gamma_condition_id": "0x16c63b7cc37f012b9f59ee164ec03877914c701d06d48291ae8d6fc08a088b0d",
+        "clob_condition_id": "0x16c63b7cc37f012b9f59ee164ec03877914c701d06d48291ae8d6fc08a088b0d",
+        "gamma_index": 4,
+        "sampling_index": 18,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 2500
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "US Election",
+          "Global Elections",
+          "Midterms",
+          "Earn 3.25%",
+          "Rewards 20, 4.5, 50",
+          "Main Election",
+          "Control & Seats",
+          "Midterm Combos"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x998bc71817b2d76921d1999ce0f3431cfd5945583667a371280ca2b430b0c06e",
+      "question": "2026 Balance of Power: R Senate, D House",
+      "market": {
+        "condition_id": "0x998bc71817b2d76921d1999ce0f3431cfd5945583667a371280ca2b430b0c06e",
+        "tokens": [
+          {
+            "token_id": "6302359956133594764084277082169634158291609371270652093164054687145970756151",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "558600218792430158020964384658762756367786275998757133304987611939841005404",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.22,
+        "best_ask": 0.23,
+        "liquidity_num": 2426145.3821,
+        "volume_24hr": 441735.788413,
+        "rewards_daily_rate": 1750.0,
+        "rewards_max_spread": 4.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "562830",
+        "gamma_condition_id": "0x998bc71817b2d76921d1999ce0f3431cfd5945583667a371280ca2b430b0c06e",
+        "clob_condition_id": "0x998bc71817b2d76921d1999ce0f3431cfd5945583667a371280ca2b430b0c06e",
+        "gamma_index": 6,
+        "sampling_index": 19,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 1750
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "US Election",
+          "Global Elections",
+          "Midterms",
+          "Earn 3.25%",
+          "Rewards 20, 4.5, 50",
+          "Main Election",
+          "Control & Seats",
+          "Midterm Combos"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x5512bfa9294bf914063ed120969908dee5cdf6e14293f28ca405d3ce4edcf485",
+      "question": "Will Iliana Iotova win the next Bulgarian presidential election?",
+      "market": {
+        "condition_id": "0x5512bfa9294bf914063ed120969908dee5cdf6e14293f28ca405d3ce4edcf485",
+        "tokens": [
+          {
+            "token_id": "50441114645457108268892324313719484550984676393068151334263975251311332365159",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "99622103131434202105388039057766053299905201074786569487569345621536678411876",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "150",
+        "best_bid": 0.82,
+        "best_ask": 0.83,
+        "liquidity_num": 43673.0044,
+        "volume_24hr": 373723.99825199996,
+        "rewards_daily_rate": 923.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "1194643",
+        "gamma_condition_id": "0x5512bfa9294bf914063ed120969908dee5cdf6e14293f28ca405d3ce4edcf485",
+        "clob_condition_id": "0x5512bfa9294bf914063ed120969908dee5cdf6e14293f28ca405d3ce4edcf485",
+        "gamma_index": 10,
+        "sampling_index": 739,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 923
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "Global Elections",
+          "World Elections",
+          "World",
+          "Bulgaria",
+          "Rewards 20, 4.5, 50",
+          "Main Election",
+          "Bulgaria Election"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x94521176f57d2ce81dde01e0b7699ca4279423042d37ed53908f0c8bfefe7e14",
+      "question": "Will the Republicans win the Texas Senate race in 2026?",
+      "market": {
+        "condition_id": "0x94521176f57d2ce81dde01e0b7699ca4279423042d37ed53908f0c8bfefe7e14",
+        "tokens": [
+          {
+            "token_id": "21265207456609426291246075480390336499088453711419597084147957999650569091884",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "9846414914422486942750462555692240718767368950832862364324602361738794436048",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.3,
+        "best_ask": 0.31,
+        "liquidity_num": 1282158.2308,
+        "volume_24hr": 345321.49749599997,
+        "rewards_daily_rate": 900.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "630964",
+        "gamma_condition_id": "0x94521176f57d2ce81dde01e0b7699ca4279423042d37ed53908f0c8bfefe7e14",
+        "clob_condition_id": "0x94521176f57d2ce81dde01e0b7699ca4279423042d37ed53908f0c8bfefe7e14",
+        "gamma_index": 12,
+        "sampling_index": 92,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 900
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "US Election",
+          "Global Elections",
+          "Midterms",
+          "Texas Senate",
+          "Texas Midterm",
+          "Senate Elections",
+          "Ken Paxton",
+          "James Talarico",
+          "Tossup Senate Races",
+          "Senate Midterm Winners",
+          "Tossups"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x34918035a590555ba1fb1d6a019d766ab6e557d63e7f3140b63b4550eee7f417",
+      "question": "Will the Democrats win the Texas Senate race in 2026?",
+      "market": {
+        "condition_id": "0x34918035a590555ba1fb1d6a019d766ab6e557d63e7f3140b63b4550eee7f417",
+        "tokens": [
+          {
+            "token_id": "15290572385458522370285732869432740297199321382471116558439914335588167718663",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "25172545206000541692667496253531562288536270988826888609620735617040533835056",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.7,
+        "best_ask": 0.71,
+        "liquidity_num": 1094812.141,
+        "volume_24hr": 284639.87893800007,
+        "rewards_daily_rate": 900.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "630963",
+        "gamma_condition_id": "0x34918035a590555ba1fb1d6a019d766ab6e557d63e7f3140b63b4550eee7f417",
+        "clob_condition_id": "0x34918035a590555ba1fb1d6a019d766ab6e557d63e7f3140b63b4550eee7f417",
+        "gamma_index": 15,
+        "sampling_index": 91,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 900
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "US Election",
+          "Global Elections",
+          "Midterms",
+          "Texas Senate",
+          "Texas Midterm",
+          "Senate Elections",
+          "Ken Paxton",
+          "James Talarico",
+          "Tossup Senate Races",
+          "Senate Midterm Winners",
+          "Tossups"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0xd0590fb2d44c3b5deb053fde7072206ee9041441e3ee0e5fb022a41caf79b407",
+      "question": "Will Аndrey Gyurov win the next Bulgarian presidential election?",
+      "market": {
+        "condition_id": "0xd0590fb2d44c3b5deb053fde7072206ee9041441e3ee0e5fb022a41caf79b407",
+        "tokens": [
+          {
+            "token_id": "3182697945526261393322604209096998749411527950817722075006513953718158053728",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "15608643409971761503638981418366748681664167967140328613245148153377110556924",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "150",
+        "best_bid": 0.17,
+        "best_ask": 0.18,
+        "liquidity_num": 49953.3882,
+        "volume_24hr": 277370.673487,
+        "rewards_daily_rate": 1077.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "1194657",
+        "gamma_condition_id": "0xd0590fb2d44c3b5deb053fde7072206ee9041441e3ee0e5fb022a41caf79b407",
+        "clob_condition_id": "0xd0590fb2d44c3b5deb053fde7072206ee9041441e3ee0e5fb022a41caf79b407",
+        "gamma_index": 16,
+        "sampling_index": 740,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 1077
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "Global Elections",
+          "World Elections",
+          "World",
+          "Bulgaria",
+          "Rewards 20, 4.5, 50",
+          "Main Election",
+          "Bulgaria Election"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0xd50c016598c499fceea10a1a714e48d9b4953487fe215daeaf916068fae722f1",
+      "question": "Will the Democrats win the Iowa Senate race in 2026?",
+      "market": {
+        "condition_id": "0xd50c016598c499fceea10a1a714e48d9b4953487fe215daeaf916068fae722f1",
+        "tokens": [
+          {
+            "token_id": "90689690530039118737607894922148077480097700217322320781526913496162509181445",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "105412116375859456386463067772529895223931027977055063584054608854983174999392",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.42,
+        "best_ask": 0.43,
+        "liquidity_num": 366348.5599,
+        "volume_24hr": 271137.325216,
+        "rewards_daily_rate": 225.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "630733",
+        "gamma_condition_id": "0xd50c016598c499fceea10a1a714e48d9b4953487fe215daeaf916068fae722f1",
+        "clob_condition_id": "0xd50c016598c499fceea10a1a714e48d9b4953487fe215daeaf916068fae722f1",
+        "gamma_index": 18,
+        "sampling_index": 73,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 225
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "US Election",
+          "Midterms",
+          "Iowa Midterm",
+          "Senate Elections",
+          "Josh Turek",
+          "Ashley Hinson",
+          "Tossup Senate Races",
+          "Senate Midterm Winners",
+          "Tossups",
+          "Iowa Senate"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x307a1ed89d60b61002dd5bbf00e1408c5ed2ab3fcdb056191ca7ef9bc34d38f3",
+      "question": "Will the Democratic Party control the Senate after the 2026 Midterm elections?",
+      "market": {
+        "condition_id": "0x307a1ed89d60b61002dd5bbf00e1408c5ed2ab3fcdb056191ca7ef9bc34d38f3",
+        "tokens": [
+          {
+            "token_id": "113287701564209339913693347405685749986285999146352375265161592243948562084773",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "107118433685650702332040991454078902188473746599223732907923581436160160612542",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.72,
+        "best_ask": 0.73,
+        "liquidity_num": 2372864.0702,
+        "volume_24hr": 249963.04912600006,
+        "rewards_daily_rate": 1500.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "562793",
+        "gamma_condition_id": "0x307a1ed89d60b61002dd5bbf00e1408c5ed2ab3fcdb056191ca7ef9bc34d38f3",
+        "clob_condition_id": "0x307a1ed89d60b61002dd5bbf00e1408c5ed2ab3fcdb056191ca7ef9bc34d38f3",
+        "gamma_index": 20,
+        "sampling_index": 14,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 1500
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "Congress",
+          "US Election",
+          "Global Elections",
+          "Senate",
+          "World Elections",
+          "Midterms",
+          "Earn 3.25%",
+          "Parent For Derivative",
+          "Main Election",
+          "Control & Seats"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0xbfeb6d4cf3eab6071e204219b0647c8224d63a12778df467311b5f2a4b3a5bd4",
+      "question": "Will the Democrats win the Michigan Senate race in 2026?",
+      "market": {
+        "condition_id": "0xbfeb6d4cf3eab6071e204219b0647c8224d63a12778df467311b5f2a4b3a5bd4",
+        "tokens": [
+          {
+            "token_id": "71772627544132140586824126381855151743830987860593343955509593715269534710061",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "64025664961497419708095468282573682984741903075312816516046832361290996190088",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.81,
+        "best_ask": 0.82,
+        "liquidity_num": 616684.1716,
+        "volume_24hr": 226569.63994199998,
+        "rewards_daily_rate": 600.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "630805",
+        "gamma_condition_id": "0xbfeb6d4cf3eab6071e204219b0647c8224d63a12778df467311b5f2a4b3a5bd4",
+        "clob_condition_id": "0xbfeb6d4cf3eab6071e204219b0647c8224d63a12778df467311b5f2a4b3a5bd4",
+        "gamma_index": 22,
+        "sampling_index": 79,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 600
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "US Election",
+          "Global Elections",
+          "mike rogers",
+          "Midterms",
+          "Michigan Midterm",
+          "Senate Elections",
+          "Abdul El-Sayed",
+          "Michigan Senate",
+          "Tossup Senate Races",
+          "Senate Midterm Winners",
+          "Tossups"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x86bfb53af7250a40928975c551d12c185b762fa4ce0b40c6a64a50c946d72587",
+      "question": "Will the Republican Party control the Senate after the 2026 Midterm elections?",
+      "market": {
+        "condition_id": "0x86bfb53af7250a40928975c551d12c185b762fa4ce0b40c6a64a50c946d72587",
+        "tokens": [
+          {
+            "token_id": "51939490109676186832507970701169130490548061087912630009168726706475001411420",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "108587038225191871355030577171066853142535232042155117887981453750193713427381",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.28,
+        "best_ask": 0.29,
+        "liquidity_num": 2898048.9749,
+        "volume_24hr": 217776.36751299998,
+        "rewards_daily_rate": 1500.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "562794",
+        "gamma_condition_id": "0x86bfb53af7250a40928975c551d12c185b762fa4ce0b40c6a64a50c946d72587",
+        "clob_condition_id": "0x86bfb53af7250a40928975c551d12c185b762fa4ce0b40c6a64a50c946d72587",
+        "gamma_index": 23,
+        "sampling_index": 15,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 1500
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "Congress",
+          "US Election",
+          "Global Elections",
+          "Senate",
+          "World Elections",
+          "Midterms",
+          "Earn 3.25%",
+          "Parent For Derivative",
+          "Main Election",
+          "Control & Seats"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x38a1025bfc56539ed1ff8fdd468283d55cf9002412decd61aa8d6c578c7d01a2",
+      "question": "Will the Republicans win the Iowa Senate race in 2026?",
+      "market": {
+        "condition_id": "0x38a1025bfc56539ed1ff8fdd468283d55cf9002412decd61aa8d6c578c7d01a2",
+        "tokens": [
+          {
+            "token_id": "107844449523890311740907586041395758413047559802389895859202256336422357556837",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "45697952169290210733788647908439282215277461482653377209044144054693714912010",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.58,
+        "best_ask": 0.59,
+        "liquidity_num": 399631.0689,
+        "volume_24hr": 210710.212194,
+        "rewards_daily_rate": 225.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "630734",
+        "gamma_condition_id": "0x38a1025bfc56539ed1ff8fdd468283d55cf9002412decd61aa8d6c578c7d01a2",
+        "clob_condition_id": "0x38a1025bfc56539ed1ff8fdd468283d55cf9002412decd61aa8d6c578c7d01a2",
+        "gamma_index": 24,
+        "sampling_index": 74,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 225
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "US Election",
+          "Midterms",
+          "Iowa Midterm",
+          "Senate Elections",
+          "Josh Turek",
+          "Ashley Hinson",
+          "Tossup Senate Races",
+          "Senate Midterm Winners",
+          "Tossups",
+          "Iowa Senate"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0xce610556ec78cfd7894f4169d91fe70e31c2fb49f927fffd7fe7d06530f88d56",
+      "question": "Will David Lisnard win the 2027 French presidential election?",
+      "market": {
+        "condition_id": "0xce610556ec78cfd7894f4169d91fe70e31c2fb49f927fffd7fe7d06530f88d56",
+        "tokens": [
+          {
+            "token_id": "55404192439775628931124671719520886657525387168536821457706619003199189099864",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "79358475953126059185096320578578995575874288599466094920037110232928386404141",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.001",
+        "min_order_size": "5",
+        "rewards_min_size": "100",
+        "best_bid": 0.187,
+        "best_ask": 0.188,
+        "liquidity_num": 278380.98723,
+        "volume_24hr": 177649.43662099997,
+        "rewards_daily_rate": 111.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "679022",
+        "gamma_condition_id": "0xce610556ec78cfd7894f4169d91fe70e31c2fb49f927fffd7fe7d06530f88d56",
+        "clob_condition_id": "0xce610556ec78cfd7894f4169d91fe70e31c2fb49f927fffd7fe7d06530f88d56",
+        "gamma_index": 26,
+        "sampling_index": 221,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 111
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "France",
+          "Global Elections",
+          "French Election",
+          "World Elections",
+          "World",
+          "French Elections",
+          "Main Election"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x3fd189cac9280dfc49a07115581e8d4c9e0b7e1c1e8580a44e9ff3d74e39cf2d",
+      "question": "Will the Republicans win the Michigan Senate race in 2026?",
+      "market": {
+        "condition_id": "0x3fd189cac9280dfc49a07115581e8d4c9e0b7e1c1e8580a44e9ff3d74e39cf2d",
+        "tokens": [
+          {
+            "token_id": "1046980875306043125128331871114794349002409233139736033870402475326170083426",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "71610581811588451243087930916572592402913705975252472987256607890992191263885",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.19,
+        "best_ask": 0.2,
+        "liquidity_num": 377732.6673,
+        "volume_24hr": 166939.24869799998,
+        "rewards_daily_rate": 600.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "630806",
+        "gamma_condition_id": "0x3fd189cac9280dfc49a07115581e8d4c9e0b7e1c1e8580a44e9ff3d74e39cf2d",
+        "clob_condition_id": "0x3fd189cac9280dfc49a07115581e8d4c9e0b7e1c1e8580a44e9ff3d74e39cf2d",
+        "gamma_index": 28,
+        "sampling_index": 80,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 600
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "United States",
+          "US Election",
+          "Global Elections",
+          "mike rogers",
+          "Midterms",
+          "Michigan Midterm",
+          "Senate Elections",
+          "Abdul El-Sayed",
+          "Michigan Senate",
+          "Tossup Senate Races",
+          "Senate Midterm Winners",
+          "Tossups"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0xcceae66d81c60f90c9679ab531b865bd7e9f95cc54f7b0634a24095519b10d65",
+      "question": "Will the Republicans win the Florida governor race in 2026?",
+      "market": {
+        "condition_id": "0xcceae66d81c60f90c9679ab531b865bd7e9f95cc54f7b0634a24095519b10d65",
+        "tokens": [
+          {
+            "token_id": "107409796822153809778143872196236532785178617102787858261374110829112218839748",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "47371207337429105795077789605234118169598966393033859219795208509845903311456",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.64,
+        "best_ask": 0.65,
+        "liquidity_num": 307129.3197,
+        "volume_24hr": 151871.94470000002,
+        "rewards_daily_rate": 225.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "629325",
+        "gamma_condition_id": "0xcceae66d81c60f90c9679ab531b865bd7e9f95cc54f7b0634a24095519b10d65",
+        "clob_condition_id": "0xcceae66d81c60f90c9679ab531b865bd7e9f95cc54f7b0634a24095519b10d65",
+        "gamma_index": 33,
+        "sampling_index": 44,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 225
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "US Election",
+          "Midterms",
+          "Florida Midterm",
+          "Governor Elections",
+          "Florida Governor",
+          "Tossup Governor Races",
+          "Tossups"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0xcd953913ecd5bf5387092bf447fe13190871b2bc9436c85b0918b4767c3fa58a",
+      "question": "Will the Republicans win the Texas governor race in 2026?",
+      "market": {
+        "condition_id": "0xcd953913ecd5bf5387092bf447fe13190871b2bc9436c85b0918b4767c3fa58a",
+        "tokens": [
+          {
+            "token_id": "54743173400191373818547682740700297683169841200363505623023527116388816282328",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "1866695229821909795321299492017203124655045093500207568743162324352894510180",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.001",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.684,
+        "best_ask": 0.685,
+        "liquidity_num": 271132.33157,
+        "volume_24hr": 150164.05795599998,
+        "rewards_daily_rate": 225.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "629691",
+        "gamma_condition_id": "0xcd953913ecd5bf5387092bf447fe13190871b2bc9436c85b0918b4767c3fa58a",
+        "clob_condition_id": "0xcd953913ecd5bf5387092bf447fe13190871b2bc9436c85b0918b4767c3fa58a",
+        "gamma_index": 34,
+        "sampling_index": 68,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 225
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "US Election",
+          "Midterms",
+          "Texas Midterm",
+          "Governor Elections",
+          "Tossup Governor Races",
+          "Tossups",
+          "Texas Governor"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x3babe91f8d2fac44027f9ba7f0f1a59e61b72419828e6e517f96bbcf4e132498",
+      "question": "Will the Democrats win the Ohio governor race in 2026?",
+      "market": {
+        "condition_id": "0x3babe91f8d2fac44027f9ba7f0f1a59e61b72419828e6e517f96bbcf4e132498",
+        "tokens": [
+          {
+            "token_id": "63255709540320761353971859526848930870803944190764324681913735372035438815215",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "16976595754865702888942253430173145813500518669245701188211359895815715104826",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.8,
+        "best_ask": 0.81,
+        "liquidity_num": 297060.742,
+        "volume_24hr": 111293.04885,
+        "rewards_daily_rate": 375.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "629557",
+        "gamma_condition_id": "0x3babe91f8d2fac44027f9ba7f0f1a59e61b72419828e6e517f96bbcf4e132498",
+        "clob_condition_id": "0x3babe91f8d2fac44027f9ba7f0f1a59e61b72419828e6e517f96bbcf4e132498",
+        "gamma_index": 42,
+        "sampling_index": 59,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 375
+        },
+        "clob_tags": [
+          "Politics",
+          "vivek ramaswamy",
+          "Elections",
+          "US Election",
+          "Midterms",
+          "Ohio Midterm",
+          "Governor Elections",
+          "Amy Acton",
+          "Tossup Governor Races",
+          "Tossups",
+          "Ohio Governor"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x460d3942d385cdeda20519c0c5ad804ae48dc18efc9a82e1f1be87a29e69adb3",
+      "question": "Will the Democrats win the Kansas Senate race in 2026?",
+      "market": {
+        "condition_id": "0x460d3942d385cdeda20519c0c5ad804ae48dc18efc9a82e1f1be87a29e69adb3",
+        "tokens": [
+          {
+            "token_id": "75079868093228966915894372964099062660587490227046756021175661325867722540666",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "37327444084035787269854507880662541101916131726641992937390933740081521292625",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "50",
+        "best_bid": 0.52,
+        "best_ask": 0.53,
+        "liquidity_num": 419600.1043,
+        "volume_24hr": 108679.458394,
+        "rewards_daily_rate": 375.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "630746",
+        "gamma_condition_id": "0x460d3942d385cdeda20519c0c5ad804ae48dc18efc9a82e1f1be87a29e69adb3",
+        "clob_condition_id": "0x460d3942d385cdeda20519c0c5ad804ae48dc18efc9a82e1f1be87a29e69adb3",
+        "gamma_index": 45,
+        "sampling_index": 75,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 375
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "US Election",
+          "Midterms",
+          "Kansas Midterm",
+          "Senate Elections",
+          "Tossup Senate Races",
+          "Senate Midterm Winners",
+          "Tossups",
+          "Kansas Senate"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0x174ea87d011bfd0b230efc45e0b4d0756d38af91f0ffbab70013a582603c2be8",
+      "question": "Will Jean-Luc Mélenchon win the 2027 French presidential election?",
+      "market": {
+        "condition_id": "0x174ea87d011bfd0b230efc45e0b4d0756d38af91f0ffbab70013a582603c2be8",
+        "tokens": [
+          {
+            "token_id": "88550326946437280548248031502775629664259630024343210447063397951616199975032",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "78935030613038194779147226463048913187247425461933527083007539809178403199936",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "100",
+        "best_bid": 0.11,
+        "best_ask": 0.12,
+        "liquidity_num": 607366.5419,
+        "volume_24hr": 105895.27867100001,
+        "rewards_daily_rate": 55.0,
+        "rewards_max_spread": 6.5,
+        "rebate_rate": 0.25,
+        "taker_fee_bps": 400,
+        "fees_enabled": true,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "679030",
+        "gamma_condition_id": "0x174ea87d011bfd0b230efc45e0b4d0756d38af91f0ffbab70013a582603c2be8",
+        "clob_condition_id": "0x174ea87d011bfd0b230efc45e0b4d0756d38af91f0ffbab70013a582603c2be8",
+        "gamma_index": 47,
+        "sampling_index": 222,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 55
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "France",
+          "Global Elections",
+          "French Election",
+          "World Elections",
+          "World",
+          "French Elections",
+          "Main Election"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "0xdbe93b5a701f36076a560fa4b9ba59e365a6e8e2ea6a83764640010657277ca4",
+      "question": "Will Gadi Eizenkot be the next Prime Minister of Israel?",
+      "market": {
+        "condition_id": "0xdbe93b5a701f36076a560fa4b9ba59e365a6e8e2ea6a83764640010657277ca4",
+        "tokens": [
+          {
+            "token_id": "52487256270918227930942830546248720603566203568229607048093730748840489555808",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "1507744758511144558263623459899956467548763419522526462308518027912401299177",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.001",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.368,
+        "best_ask": 0.37,
+        "liquidity_num": 124554.794,
+        "volume_24hr": 95637.126673,
+        "rewards_daily_rate": 1000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "provenance": {
+        "synthetic": false,
+        "gamma_market_id": "682708",
+        "gamma_condition_id": "0xdbe93b5a701f36076a560fa4b9ba59e365a6e8e2ea6a83764640010657277ca4",
+        "clob_condition_id": "0xdbe93b5a701f36076a560fa4b9ba59e365a6e8e2ea6a83764640010657277ca4",
+        "gamma_index": 53,
+        "sampling_index": 233,
+        "matched_reward": {
+          "asset_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+          "rewards_daily_rate": 1000
+        },
+        "clob_tags": [
+          "Politics",
+          "Elections",
+          "Middle East",
+          "Israel",
+          "Global Elections",
+          "Geopolitics",
+          "World Elections",
+          "World",
+          "Trump-Netanyahu",
+          "Main Election",
+          "Israel Election"
+        ],
+        "gamma_accepting_orders": true,
+        "clob_accepting_orders": true,
+        "in_play_source": "Gamma inPlay is absent; preserve null, do not infer from game_start_time or wall clock."
+      }
+    },
+    {
+      "fixture_id": "synthetic:positive_control",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": true,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "changed_fields": {
+          "in_play": false
+        },
+        "reason": "positive_control"
+      }
+    },
+    {
+      "fixture_id": "synthetic:rewards_closed",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": false,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "rewards_enabled": false
+        },
+        "reason": "rewards_closed"
+      }
+    },
+    {
+      "fixture_id": "synthetic:nonbinary",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          },
+          {
+            "token_id": "synthetic-third",
+            "outcome": "Other"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "tokens": [
+            {
+              "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+              "outcome": "Yes"
+            },
+            {
+              "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+              "outcome": "No"
+            },
+            {
+              "token_id": "synthetic-third",
+              "outcome": "Other"
+            }
+          ]
+        },
+        "reason": "nonbinary"
+      }
+    },
+    {
+      "fixture_id": "synthetic:mid_lower_endpoint",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.095,
+        "best_ask": 0.105,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": true,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "best_bid": 0.095,
+          "best_ask": 0.105
+        },
+        "reason": "mid_lower_endpoint"
+      }
+    },
+    {
+      "fixture_id": "synthetic:mid_just_below",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.094999,
+        "best_ask": 0.104999,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "best_bid": 0.094999,
+          "best_ask": 0.104999
+        },
+        "reason": "mid_just_below"
+      }
+    },
+    {
+      "fixture_id": "synthetic:mid_upper_endpoint",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.895,
+        "best_ask": 0.905,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": true,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "best_bid": 0.895,
+          "best_ask": 0.905
+        },
+        "reason": "mid_upper_endpoint"
+      }
+    },
+    {
+      "fixture_id": "synthetic:mid_just_above",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.895001,
+        "best_ask": 0.905001,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "best_bid": 0.895001,
+          "best_ask": 0.905001
+        },
+        "reason": "mid_just_above"
+      }
+    },
+    {
+      "fixture_id": "synthetic:liquidity_endpoint",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 1000.0,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": true,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "liquidity_num": 1000.0
+        },
+        "reason": "liquidity_endpoint"
+      }
+    },
+    {
+      "fixture_id": "synthetic:liquidity_just_below",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 999.999,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "liquidity_num": 999.999
+        },
+        "reason": "liquidity_just_below"
+      }
+    },
+    {
+      "fixture_id": "synthetic:nonpolitical",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": false,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "political": false
+        },
+        "reason": "nonpolitical"
+      }
+    },
+    {
+      "fixture_id": "synthetic:in_play",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": true,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "in_play": true
+        },
+        "reason": "in_play"
+      }
+    },
+    {
+      "fixture_id": "synthetic:accepting_orders_false",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": false
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "accepting_orders": false
+        },
+        "reason": "accepting_orders_false"
+      }
+    },
+    {
+      "fixture_id": "synthetic:in_play_unknown",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": null,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "in_play": null
+        },
+        "reason": "in_play_unknown"
+      }
+    },
+    {
+      "fixture_id": "synthetic:no_positive_reward",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 0.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "rewards_daily_rate": 0.0
+        },
+        "reason": "no_positive_reward"
+      }
+    },
+    {
+      "fixture_id": "synthetic:no_reward_band",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 0.0,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "rewards_max_spread": 0.0
+        },
+        "reason": "no_reward_band"
+      }
+    },
+    {
+      "fixture_id": "synthetic:missing_bid",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.0,
+        "best_ask": 0.36,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "best_bid": 0.0
+        },
+        "reason": "missing_bid"
+      }
+    },
+    {
+      "fixture_id": "synthetic:missing_ask",
+      "market": {
+        "condition_id": "0x7586a96520578acaaaa4ea84a2582f197f84255da1f3392a7aa300386c187b37",
+        "tokens": [
+          {
+            "token_id": "20006732765674855733524007935991362439352594042415161039767275461950712817548",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "54533569528927082430133047556849600511985191158927477533124630301934489498530",
+            "outcome": "No"
+          }
+        ],
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "rewards_min_size": "200",
+        "best_bid": 0.35,
+        "best_ask": 0.0,
+        "liquidity_num": 349467.5666,
+        "volume_24hr": 822020.5854989999,
+        "rewards_daily_rate": 3000.0,
+        "rewards_max_spread": 3.5,
+        "rebate_rate": 0.0,
+        "taker_fee_bps": 0,
+        "fees_enabled": false,
+        "rewards_enabled": true,
+        "political": true,
+        "in_play": false,
+        "accepting_orders": true
+      },
+      "eligible": false,
+      "provenance": {
+        "synthetic": true,
+        "base_fixture_id": "synthetic:positive_control",
+        "changed_fields": {
+          "best_ask": 0.0
+        },
+        "reason": "missing_ask"
+      }
+    }
+  ]
+}
