@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
+from lp_v2.status_server import serve
+
 
 @dataclass(frozen=True, slots=True)
 class RunConfig:
@@ -34,9 +36,9 @@ def parse_run(argv: Sequence[str] | None) -> RunConfig:
 
 def main(argv: Sequence[str] | None = None) -> int:
     config = parse_run(argv)
-    # shortcut: returns after validation; step 11 adds the status server.
     print(
         f"Startup capital: {config.capital_usdc} USDC; "
         f"started at {config.started_at.isoformat()}"
     )
+    serve(config)
     return 0
