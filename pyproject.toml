@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lp-v2"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["polymarket-client==0.2.0", "websockets"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+lp-v2 = "lp_v2.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
