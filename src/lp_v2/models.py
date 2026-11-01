@@ -145,9 +145,21 @@ class MergeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CapitalReservation:
+    owner: str
+    condition_id: str
+    token_ids: tuple[str, str]
+    planned_quantity: Decimal
+    remaining_fee_usdc: Decimal
+    request_ids: tuple[str, ...]
+    merge_requests: tuple[MergeRequest, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class CapitalBreakdown:
     inventory_cost: Decimal
     open_buys: Decimal
     pending_requests: Decimal
     hedge_reserve: Decimal
     fee_reserve: Decimal
+    total: Decimal
