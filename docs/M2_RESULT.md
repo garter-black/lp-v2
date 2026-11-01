@@ -30,4 +30,14 @@ The [random invariant harness](../tests/test_capital_random.py) retains **500 fi
 
 HTTP tests run the real stdlib parser/handler over memory streams with server-construction/serving boundary fakes. The unconditional [socket guard](../tests/conftest.py) and its [prohibition test](../tests/test_no_network.py) remain intact. **No actual TCP listener was started during testing**, including loopback; these results are not live transport acceptance.
 
+## 3. Data, oracle and recovery provenance
+
+[Market fixtures](../tests/data/markets_snapshot.json) contain **20 real political records and 17 explicitly labelled synthetic rows**. Capture metadata preserves source identifiers, timestamps, hashes and the fields changed in synthetic controls. Missing captured `inPlay` stays UNKNOWN/ineligible; these historical fixtures do not establish current live eligibility.
+
+The [scoring implementation](../src/lp_v2/scoring.py) derives from
+[warproxxx/poly-maker at 4f32103591c9582ccd012bdf10f77d86e5879444](https://github.com/warproxxx/poly-maker/blob/4f32103591c9582ccd012bdf10f77d86e5879444/src/polymaker/catalog/scoring.py).
+The [frozen expectations](../tests/data/scores_expected.json) were generated once from the original AST: only the unavailable domain import was replaced with a data stand-in; all five function ASTs and MarketScore were unchanged, with no `lp_v2` imports. [Scoring tests](../tests/test_scoring.py) compare the independent frozen values and verify source/snapshot provenance. The complete upstream MIT notice is retained in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+[Recovery](../src/lp_v2/ledger.py) requires authentic, complete ownership and intent history, fills, cumulative order proof, cancellation-attempt provenance and matching consumed-position/USDC merge receipts. A wallet delta alone is not settlement proof. Unresolved UNKNOWN exposure survives recovery, foreign/old LP holdings are excluded, and a lower restart cap blocks new allocation without discarding covered recovery. Fee assumptions in tests are explicit inputs, not verified live exchange fees. The CLI status process does not fetch or reconstruct exchange state itself.
+
 【LLM：Codex@Air｜模型=gpt-6-astra｜effort=xhigh｜fast=否】
