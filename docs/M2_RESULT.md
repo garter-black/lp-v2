@@ -57,4 +57,30 @@ The first three runs precede the full step11 suite. Main verified the C11 run ag
 
 Workflow independence is separate from mandatory merge enforcement. Main's readback at **2026-11-01T20:47:02.694540+00:00** found `main` **unprotected**, required status-check enforcement off and active rules `[]`. Consequently there is **no server-side required-check gate**. No repository settings were changed, and a workflow success alone does not authorize merge or deployment.
 
+## 5. Reproduction and remaining review
+
+The recorded local runner was Python **3.12.12** / pytest **8.4.2**. From the repository root, create an environment if needed and run:
+
+```sh
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e '.[test]'
+.venv/bin/python -m pytest -q
+```
+
+The focused CLI/status/accounting/guard scope is:
+
+```sh
+.venv/bin/python -m pytest -q tests/test_cli.py tests/test_status_server.py tests/test_capital.py tests/test_ledger.py tests/test_no_network.py
+```
+
+A single deterministic financial sequence can be reproduced with:
+
+```sh
+.venv/bin/python -m pytest -q 'tests/test_capital_random.py::test_random_capital_invariants[20261102]'
+```
+
+` .venv/bin/lp-v2 run --capital-usdc 100 ` starts only the blocking local status service described above, with an empty ledger; it does not start trading. That listener was not exercised over live TCP in this evidence.
+
+C11 CI is verified. Remaining work belongs to Main: collect the five final document-commit timings, update the report/README in step13, and present a normal reviewable PR for cloud Claude. This report does not claim cloud Claude has reviewed it, that all gates are complete, or that the PR is merge-ready. The approved stopping point is a reviewable PR awaiting that external review, with issue #3 still open. Merge, deployment, live use and issue closure are outside this delivery.
+
 【LLM：Codex@Air｜模型=gpt-6-astra｜effort=xhigh｜fast=否】
