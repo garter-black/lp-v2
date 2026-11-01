@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 from lp_v2.models import (
-    CapitalBreakdown, CapitalReservation, MarketExposure, MergeResult, Order, OrderRequest, OrderResult, OrderStatus, Outcome, Position,
+    CapitalBreakdown, CapitalReservation, LedgerSnapshot, MarketExposure, MergeResult, Order, OrderRequest, OrderResult, OrderStatus, Outcome, Position,
 )
 
 
@@ -179,3 +179,45 @@ def can_open_market(
 def recovery_action_allowed(action: str, *, covered_hedge: bool) -> bool:
     """Recovery uses existing coverage; it never admits a new allocation."""
     return action in ("merge", "exit") or (action == "hedge" and covered_hedge is True)
+
+
+def projected_unpaired_cost(state: LedgerSnapshot) -> Decimal:
+    """Conservative cost if either side's outstanding buys fill before the other."""
+    active_ids = {key for r in state.reservations for key in r.request_ids}
+    orders = tuple(o for o in state.orders if o.request.request_id in active_ids)
+    _, exposures = capital_exposure(state.owner, reservations=state.reservations, positions=state.positions,
+                                   orders=orders, pending=state.pending, merge_results=state.merges,
+                                   request_results=tuple(r for r in state.rejected if r.request.request_id in active_ids))
+    exposure = {e.condition_id: e for e in exposures}
+    holdings = {(p.condition_id, p.token_id): p for p in state.positions}
+    known = {o.request.request_id for o in orders}
+    total = Decimal("0")
+    for reservation in state.reservations:
+        cid = reservation.condition_id
+        completed = [exposure[cid].reserved_quantity - q for q in exposure[cid].fee_obligations]
+        possible, rates = list(completed), [Decimal("0"), Decimal("0")]
+        for index, token in enumerate(reservation.token_ids):
+            position = holdings.get((cid, token))
+            held = position.quantity if position else Decimal("0")
+            if held:
+                rates[index] = position.cost_usdc / held
+            intents = []
+            for order in orders:
+                if order.request.quote.condition_id == cid and order.request.quote.token_id == token:
+                    residual = order.remaining_quantity if order.status == OrderStatus.LIVE or not order.authoritative else Decimal("0")
+                    possible[index] += residual
+                    if residual or (order.filled_quantity and completed[index] > held):
+                        intents.append(order.request)
+            for request in state.pending:
+                if request.request_id not in known and request.quote.condition_id == cid and request.quote.token_id == token:
+                    possible[index] += request.quote.quantity
+                    intents.append(request)
+            for request in intents:
+                terms = request.reservation_terms
+                if terms is None:
+                    raise ValueError("risk projection requires explicit fee provenance")
+                fee = terms.fee_per_share[terms.token_ids.index(token)]
+                _amounts(fee)
+                rates[index] = max(rates[index], request.quote.price + fee)
+        total += max(max(Decimal("0"), possible[i] - completed[1 - i]) * rates[i] for i in (0, 1))
+    return total

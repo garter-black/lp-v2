@@ -87,14 +87,15 @@ class FakeSDK:
 
     def cancel_order(self, order_id: str, *, at: datetime) -> OrderResult:
         order = self._orders[order_id]
-        before = order
         outcome, cancelled = self._cancel_scripts.pop(order_id)
         if at < order.observed_at:
             raise ValueError("cancellation precedes exchange fact")
+        order = replace(order, cancel_requested_at=order.cancel_requested_at or at)
+        before = order
         if cancelled and order.status == OrderStatus.LIVE:
             order = replace(order, remaining_quantity=Decimal("0"), status=OrderStatus.CANCELLED,
                             observed_at=at)
-            self._orders[order_id] = order
+        self._orders[order_id] = order
         if outcome == Outcome.UNKNOWN:
             order = replace(before, authoritative=False, observed_at=at)
         return OrderResult(order.request, outcome, order, at)

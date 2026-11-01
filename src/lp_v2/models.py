@@ -84,6 +84,7 @@ class OrderRequest:
     created_at: datetime
     expires_at: datetime
     reservation_terms: ReservationTerms | None = None
+    purpose: Literal["opening", "hedge"] = "opening"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,7 @@ class Order:
     status: OrderStatus
     observed_at: datetime
     authoritative: bool
+    cancel_requested_at: datetime | None = None  # Attempt proof survives UNKNOWN/restart, not a cancellation ack.
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,3 +202,28 @@ class LedgerSnapshot:
     cash: Decimal | None
     capital: CapitalBreakdown
     realized_profit: Decimal
+    cancels: tuple["CancelRequest", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MarketPlan:
+    market: Market
+    books: tuple[Book, Book]
+    quantity: Decimal
+    fee_per_share: tuple[Decimal, Decimal]
+
+
+@dataclass(frozen=True, slots=True)
+class CancelRequest:
+    order_id: str
+    request_id: str
+    owner: str
+    condition_id: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Decision:
+    place: tuple[OrderRequest, ...] = ()
+    cancel: tuple[CancelRequest, ...] = ()
+    merge: tuple[MergeRequest, ...] = ()

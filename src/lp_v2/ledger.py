@@ -2,11 +2,12 @@
 
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 
 from lp_v2.capital import can_open_market, capital_breakdown, capital_exposure
 from lp_v2.models import (
-    Balance, CapitalReservation, Fill, LedgerSnapshot, MergeRequest, MergeResult, Order, OrderRequest, OrderResult,
+    Balance, CancelRequest, CapitalReservation, Fill, LedgerSnapshot, MergeRequest, MergeResult, Order, OrderRequest, OrderResult,
     OrderStatus, Outcome, Position, ReservationTerms,
 )
 from lp_v2.sdk_port import SDKPort
@@ -67,6 +68,7 @@ class Ledger:
         self._merge_requests = {}
         self._merge_facts = {}
         self._settled = {}
+        self._cancels = {}
 
     def reserve_market(self, condition_id: str, terms: ReservationTerms, *,
                        projected_market_unpaired: Decimal, current_unpaired_cost: Decimal,
@@ -90,6 +92,41 @@ class Ledger:
     def reservation_terms(self, condition_id: str) -> ReservationTerms:
         return self._terms[condition_id]
 
+    def oldest_holding(self, condition_id: str) -> datetime | None:
+        events = [(f.executed_at, 0, f.token_id, f.quantity) for f in self._fills.values() if f.condition_id == condition_id]
+        events.extend((r.observed_at, 1, p.token_id, -p.quantity) for r in self._settled.values()
+                      if r.request.condition_id == condition_id for p in r.consumed_positions)
+        quantities, opened = {}, {}
+        for at, _, token, change in sorted(events):
+            previous = quantities.get(token, Decimal("0"))
+            if change > 0 and previous == 0:
+                opened[token] = at
+            quantities[token] = previous + change
+            if quantities[token] < 0:
+                raise ValueError("settlement time precedes owned inventory")
+            if quantities[token] == 0:
+                opened.pop(token, None)
+        return min(opened.values(), default=None)
+
+    def register_cancel(self, request: CancelRequest) -> bool:
+        order = next((o for o in self._canonical_orders() if o.order_id == request.order_id), None)
+        if (order is None or request.owner != self.owner or request.request_id != order.request.request_id
+                or request.condition_id != order.request.quote.condition_id or request.created_at < order.request.created_at):
+            raise ValueError("cancellation identity/time does not match owned order")
+        if request.order_id in self._cancels or (order.authoritative and order.status != OrderStatus.LIVE):
+            return False
+        self._cancels[request.order_id] = request
+        return True
+
+    def mergeable_quantity(self, condition_id: str) -> Decimal:
+        terms = self._terms[condition_id]
+        positions = {p.token_id: p.quantity for p in self._positions() if p.condition_id == condition_id}
+        reserved = sum((r.quantity for key, r in self._merge_requests.items()
+                        if r.condition_id == condition_id and {r.yes_token_id, r.no_token_id} == set(terms.token_ids)
+                        and key not in self._settled
+                        and (key not in self._merge_facts or self._merge_facts[key].outcome != Outcome.FAILED)), Decimal("0"))
+        return max(Decimal("0"), min(positions.get(token, Decimal("0")) for token in terms.token_ids) - reserved)
+
     def register_merge(self, request: MergeRequest) -> bool:
         if request.merge_id in self._merge_requests:
             if self._merge_requests[request.merge_id] != request:
@@ -97,13 +134,7 @@ class Ledger:
             return False
         terms = self._terms.get(request.condition_id)
         _merge_valid(request, self.owner, terms)
-        positions = {p.token_id: p for p in self._positions() if p.condition_id == request.condition_id}
-        reserved = sum((r.quantity for key, r in self._merge_requests.items()
-                        if r.condition_id == request.condition_id
-                        and {r.yes_token_id, r.no_token_id} == set(terms.token_ids)
-                        and key not in self._settled
-                        and (key not in self._merge_facts or self._merge_facts[key].outcome != Outcome.FAILED)), Decimal("0"))
-        if any(token not in positions or positions[token].quantity < request.quantity + reserved for token in terms.token_ids):
+        if request.quantity > self.mergeable_quantity(request.condition_id):
             raise ValueError("merge exceeds unreserved owned pair inventory")
         self._merge_requests[request.merge_id] = request
         return True
@@ -246,6 +277,8 @@ class Ledger:
             raise ValueError("order contradicts confirmed placement rejection")
         if order.request != result.request or not order.order_id:
             raise ValueError("order identity does not match request")
+        if order.cancel_requested_at is not None and order.cancel_requested_at < order.request.created_at:
+            raise ValueError("cancellation attempt precedes order intent")
         _money(order.filled_quantity, order.remaining_quantity)
         terminal = order.authoritative and order.status in (OrderStatus.CANCELLED, OrderStatus.FILLED)
         if (order.status not in (OrderStatus.LIVE, OrderStatus.CANCELLED, OrderStatus.FILLED)
@@ -270,6 +303,9 @@ class Ledger:
         quantity = max(order.filled_quantity, previous.filled_quantity if previous else Decimal("0"))
         remaining = Decimal("0") if chosen.authoritative and chosen.status != OrderStatus.LIVE else chosen.request.quote.quantity - quantity
         self._order_facts[order.order_id] = replace(chosen, filled_quantity=quantity, remaining_quantity=remaining)
+        if order.cancel_requested_at is not None:
+            self._cancels.setdefault(order.order_id, CancelRequest(order.order_id, order.request.request_id, self.owner,
+                                                                  order.request.quote.condition_id, order.cancel_requested_at))
         self._refresh()
 
     def apply_fill(self, fill: Fill) -> None:
@@ -410,4 +446,5 @@ class Ledger:
                               tuple(self._merge_facts[key] for key in sorted(self._merge_facts)),
                               reservations, self._cash, capital,
                               sum((r.received_usdc - sum((p.cost_usdc for p in r.consumed_positions), Decimal("0"))
-                                   for r in self._settled.values()), Decimal("0")))
+                                   for r in self._settled.values()), Decimal("0")),
+                              tuple(self._cancels[key] for key in sorted(self._cancels)))
