@@ -347,20 +347,23 @@ class Ledger:
 
     def _canonical_orders(self) -> tuple[Order, ...]:
         orders = dict(self._order_facts)
+        fills_by_order = {}
         for fill in self._fills.values():
+            fills_by_order.setdefault(fill.order_id, []).append(fill)
             if fill.order_id not in orders:
                 request = self._requests[fill.request_id]
                 orders[fill.order_id] = Order(fill.order_id, request, Decimal("0"), request.quote.quantity,
                                               OrderStatus.LIVE, request.created_at, False)
         result = []
         for order_id, order in sorted(orders.items()):
-            fills = [f for f in self._fills.values() if f.order_id == order_id]
+            fills = fills_by_order.get(order_id, ())
             quantity = max(order.filled_quantity, sum((f.quantity for f in fills), Decimal("0")))
             terminal = order.authoritative and order.status in (OrderStatus.CANCELLED, OrderStatus.FILLED)
             remaining = Decimal("0") if terminal else min(order.remaining_quantity, order.request.quote.quantity - quantity)
             status = order.status if terminal else OrderStatus.FILLED if quantity == order.request.quote.quantity else OrderStatus.LIVE
             observed = max([order.observed_at, *(f.executed_at for f in fills)])
-            result.append(replace(order, filled_quantity=quantity, remaining_quantity=remaining, status=status, observed_at=observed))
+            result.append(Order(order.order_id, order.request, quantity, remaining, status, observed,
+                                order.authoritative, order.cancel_requested_at))
         return tuple(result)
 
     def _positions(self) -> tuple[Position, ...]:
@@ -371,20 +374,18 @@ class Ledger:
         for at, _, _, fact in sorted(events):
             if isinstance(fact, Fill):
                 key = (fact.condition_id, fact.token_id)
-                previous = positions.get(key, Position(self.owner, *key, Decimal("0"), Decimal("0"), at))
-                positions[key] = replace(previous, quantity=previous.quantity + fact.quantity,
-                                         cost_usdc=previous.cost_usdc + (fact.quantity * fact.price + fact.fee_usdc),
-                                         updated_at=max(previous.updated_at, at))
+                quantity, cost, updated = positions.get(key, (Decimal("0"), Decimal("0"), at))
+                positions[key] = (quantity + fact.quantity, cost + (fact.quantity * fact.price + fact.fee_usdc),
+                                  max(updated, at))
                 continue
             for consumed in fact.consumed_positions:
                 key = (consumed.condition_id, consumed.token_id)
                 previous = positions.get(key)
-                if previous is None or previous.quantity < consumed.quantity or previous.cost_usdc < consumed.cost_usdc:
+                if previous is None or previous[0] < consumed.quantity or previous[1] < consumed.cost_usdc:
                     raise ValueError("receipt exceeds recorded owned inventory")
-                positions[key] = replace(previous, quantity=previous.quantity - consumed.quantity,
-                                         cost_usdc=previous.cost_usdc - consumed.cost_usdc,
-                                         updated_at=max(previous.updated_at, at))
-        return tuple(positions[key] for key in sorted(positions))
+                quantity, cost, updated = previous
+                positions[key] = (quantity - consumed.quantity, cost - consumed.cost_usdc, max(updated, at))
+        return tuple(Position(self.owner, *key, *positions[key]) for key in sorted(positions))
 
     def _active(self, request: OrderRequest) -> bool:
         return request.reservation_terms.generation == self._terms[request.quote.condition_id].generation
@@ -413,13 +414,15 @@ class Ledger:
         if any(remaining.values()):
             raise ValueError("older generation inventory is not fully settled")
 
-    def _capital_view(self, condition_id: str | None = None):
+    def _capital_view(self, condition_id: str | None = None, *, orders=None, positions=None):
         markets = self._terms if condition_id is None else {condition_id: self._terms[condition_id]}
-        orders = tuple(o for o in self._canonical_orders() if o.request.quote.condition_id in markets and self._active(o.request))
+        orders = self._canonical_orders() if orders is None else orders
+        positions = self._positions() if positions is None else positions
+        orders = tuple(o for o in orders if o.request.quote.condition_id in markets and self._active(o.request))
         known_ids = {o.request.request_id for o in orders}
         pending = tuple(r for key, r in sorted(self._requests.items())
                         if r.quote.condition_id in markets and self._active(r) and key not in known_ids and key not in self._rejected)
-        positions = tuple(p for p in self._positions() if p.condition_id in markets)
+        positions = tuple(p for p in positions if p.condition_id in markets)
         reservations = tuple(CapitalReservation(
             self.owner, cid, terms.token_ids, terms.planned_quantity,
             terms.planned_quantity * sum(terms.fee_per_share),
@@ -449,9 +452,10 @@ class Ledger:
                 self._terms[reservation.condition_id] = replace(terms, planned_quantity=reservation.planned_quantity)
 
     def snapshot(self) -> LedgerSnapshot:
-        reservations, pending, capital = self._capital_view()
+        orders, positions = self._canonical_orders(), self._positions()
+        reservations, pending, capital = self._capital_view(orders=orders, positions=positions)
         return LedgerSnapshot(self.owner, self.startup_cap, tuple(self._requests[key] for key in sorted(self._requests)),
-                              self._canonical_orders(), tuple(self._fills[key] for key in sorted(self._fills)), self._positions(),
+                              orders, tuple(self._fills[key] for key in sorted(self._fills)), positions,
                               pending, tuple(self._rejected[key] for key in sorted(self._rejected)),
                               tuple(self._merge_facts[key] for key in sorted(self._merge_facts)),
                               reservations, self._cash, capital,

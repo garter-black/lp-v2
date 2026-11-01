@@ -28,8 +28,8 @@ class Engine:
             self._ranked_ids = tuple(p.market.condition_id for p in ranked)
             self._ranked_at = now
         places, cancels, merges = [], [], []
+        state = self.ledger.snapshot()
         for plan in plans:
-            state = self.ledger.snapshot()
             cid = plan.market.condition_id
             reservation = next((r for r in state.reservations if r.condition_id == cid), None)
             if reservation is None or reservation.planned_quantity == 0:
@@ -45,6 +45,7 @@ class Engine:
                     cancel = CancelRequest(order.order_id, order.request.request_id, state.owner, cid, now)
                     if self.ledger.register_cancel(cancel):
                         cancels.append(cancel)
+                        state = self.ledger.snapshot()
             quantity = self.ledger.mergeable_quantity(cid)
             count = sum(f.condition_id == cid for f in state.fills)
             identity = f"{state.owner}:merge:{cid}:{count}"
@@ -53,6 +54,7 @@ class Engine:
                 merge = MergeRequest(identity, state.owner, cid, *terms.token_ids, quantity, now, terms.generation)
                 if self.ledger.register_merge(merge):
                     merges.append(merge)
+                    state = self.ledger.snapshot()
             for index, token in enumerate(plan.market.tokens):
                 held = positions.get(token.token_id, Position(state.owner, cid, token.token_id, Decimal("0"), Decimal("0"), now))
                 opposite_token = plan.market.tokens[1 - index].token_id
@@ -66,10 +68,10 @@ class Engine:
                     quantity = quote.quantity - self.ledger.undelivered_quantity(cid, opposite_token)
                     if quantity > 0 and quantity >= plan.market.min_order_size:
                         places.append(self._place(replace(quote, quantity=quantity), now, purpose="hedge"))
+                        state = self.ledger.snapshot()
         current = {p.market.condition_id: p for p in plans}
         ranked = (current[cid] for cid in self._ranked_ids if cid in current and eligible_market(current[cid].market))
         for plan in ranked:
-            state = self.ledger.snapshot()
             cid = plan.market.condition_id
             oldest = self.ledger.oldest_holding(cid)
             if oldest is not None and now - oldest > timedelta(hours=24):
@@ -88,6 +90,7 @@ class Engine:
                                           current_unpaired_cost=projected_unpaired_cost(state),
                                           proposed_unpaired_cost=risk):
                 places.extend(self._place(q, now) for q in pair)
+                state = self.ledger.snapshot()
         return Decision(place=tuple(places), cancel=tuple(cancels), merge=tuple(merges))
 
     @staticmethod
