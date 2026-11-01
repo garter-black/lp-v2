@@ -15,4 +15,19 @@ The [CLI](../src/lp_v2/cli.py) validates a finite positive startup capital and f
 
 The stdlib loopback listener is the deliberate status-only networking boundary. No real SDK adapter, exchange network client, signing, live orders/cancellations, dashboard, deployment or live-use acceptance is included. [SDKPort](../src/lp_v2/sdk_port.py) is an interface, not an integration. No OpenTrader code or runtime is imported or changed.
 
+## 2. Automated behavior acceptance
+
+The recorded C11 affected suite passed **98 tests in 0.10 seconds**. Its full run retained all 703 earlier cases and added 27 status/CLI cases, for 730 passing tests. This report-only change does not rerun or replace that evidence.
+
+| Public checks | Verified behavior |
+| --- | --- |
+| [Quoting](../tests/test_quoting.py), [hedging](../tests/test_hedge.py) | Post-only BUY prices respect ticks, asks, minimum sizes and the 0.02 pair cushion. The literal example of 10 YES costing 4.10, with 0.01 remaining fee per pair, caps the NO hedge at 0.56. Existing/pending coverage is not counted twice. |
+| [Capital](../tests/test_capital.py), [ledger](../tests/test_ledger.py) | Exact component sums; fills conserve occupation; UNKNOWN/unconfirmed cancellation and unreceived merges cannot release funds. Confirmed unused coverage or reconciled actual merge receipts can release it. Ownership, identity, atomic rejection and no-replay negatives remain enforced. |
+| [Ordered scenarios](../tests/test_scenarios.py) | 14 named tests / 24 variants cover one-sided and partial fills, late fills, UNKNOWN, pending hedges, merge outcomes, rank loss, restart, the 60-second replacement rule, sequential admission and the 24-hour limit on new allocation while recovery continues. |
+| [CLI](../tests/test_cli.py), [HTTP status](../tests/test_status_server.py) | Invalid input cannot construct a server; startup config stays frozen. Nonzero pending/filled examples and subsequent snapshots serialize exact amounts. Mutation-looking payloads/queries cannot change state. |
+
+The [random invariant harness](../tests/test_capital_random.py) retains **500 fixed seeds, 20261102–20261601**, with **101,339 events**, **200–376 per seed**, three markets and at least two allocation generations per market. Every counted event checks capital components/cap, release restrictions and duplicate coverage/merge protection against actual fake exchange facts, including an independent inventory-cost-plus-live-BUY lower bound. Required event families and per-seed counts survived both timing repairs unchanged; failure tapes and exact seed replay are retained.
+
+HTTP tests run the real stdlib parser/handler over memory streams with server-construction/serving boundary fakes. The unconditional [socket guard](../tests/conftest.py) and its [prohibition test](../tests/test_no_network.py) remain intact. **No actual TCP listener was started during testing**, including loopback; these results are not live transport acceptance.
+
 【LLM：Codex@Air｜模型=gpt-6-astra｜effort=xhigh｜fast=否】
