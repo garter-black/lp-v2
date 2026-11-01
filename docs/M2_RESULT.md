@@ -40,4 +40,21 @@ The [frozen expectations](../tests/data/scores_expected.json) were generated onc
 
 [Recovery](../src/lp_v2/ledger.py) requires authentic, complete ownership and intent history, fills, cumulative order proof, cancellation-attempt provenance and matching consumed-position/USDC merge receipts. A wallet delta alone is not settlement proof. Unresolved UNKNOWN exposure survives recovery, foreign/old LP holdings are excluded, and a lower restart cap blocks new allocation without discarding covered recovery. Fee assumptions in tests are explicit inputs, not verified live exchange fees. The CLI status process does not fetch or reconstruct exchange state itself.
 
+## 4. Independent CI structure and timing evidence
+
+The [workflow](../.github/workflows/ci.yml) has one `tests` job on Python 3.12, a 10-minute job timeout, PRs targeting `main` and pushes to `main`. It installs `.[test]` from [pyproject.toml](../pyproject.toml) and runs the full `pytest` suite. Declared runtime dependencies are `polymarket-client==0.2.0` and `websockets`, with `pytest` for tests. There is no OpenTrader workflow, test result or source dependency, and no timeout/trigger change was used to obtain faster results.
+
+CI evidence supplied and verified by Main:
+
+| Phase / source | Run | Functional result and timing |
+| --- | --- | --- |
+| C10 / `b85aeba` | [41344749051](https://github.com/raymizzou/lp-v2/actions/runs/41344749051) | Cancelled at the 10-minute limit; pytest consumed 600 seconds. Timeout is not an assertion-failure conclusion. |
+| C10R1 / `aa2e58e` | [41346365023](https://github.com/raymizzou/lp-v2/actions/runs/41346365023) | SUCCESS, but job 303 seconds / run 307 seconds: the 300-second timing target still failed. |
+| C10R2 / `6dcd69a` | [41347628777](https://github.com/raymizzou/lp-v2/actions/runs/41347628777) | SUCCESS; pytest 237 seconds / job 258 seconds / run 262 seconds. This is phase improvement, not the final five-run gate. |
+| C11 / `2ffe822` | [41348615146](https://github.com/raymizzou/lp-v2/actions/runs/41348615146) | SUCCESS; 730 collected/passed. Pytest step 152 seconds / job 166 seconds / run 169 seconds; pytest-reported duration 150.56 seconds. |
+
+The first three runs precede the full step11 suite. Main verified the C11 run against the full baseline head `2ffe822988fc7ad80fde0ef0f7d88b5293596a07`; its 730-case result is confirmed, not pending. Five consecutive complete-suite runs on the full 730-case implementation, each within 300 seconds, remain to be collected from meaningful report commits. Main owns those pushes/runs and may let the independent runs execute concurrently. Step13 will add verified links and timings; none are invented here.
+
+Workflow independence is separate from mandatory merge enforcement. Main's readback at **2026-11-01T20:47:02.694540+00:00** found `main` **unprotected**, required status-check enforcement off and active rules `[]`. Consequently there is **no server-side required-check gate**. No repository settings were changed, and a workflow success alone does not authorize merge or deployment.
+
 【LLM：Codex@Air｜模型=gpt-6-astra｜effort=xhigh｜fast=否】
