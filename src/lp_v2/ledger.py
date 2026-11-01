@@ -92,6 +92,12 @@ class Ledger:
     def reservation_terms(self, condition_id: str) -> ReservationTerms:
         return self._terms[condition_id]
 
+    def undelivered_quantity(self, condition_id: str, token_id: str) -> Decimal:
+        """Matched cumulative quantity whose fee-inclusive trade notice is still missing."""
+        return sum((o.filled_quantity - sum((f.quantity for f in self._fills.values() if f.order_id == o.order_id), Decimal("0"))
+                    for o in self._canonical_orders() if self._active(o.request)
+                    and o.request.quote.condition_id == condition_id and o.request.quote.token_id == token_id), Decimal("0"))
+
     def oldest_holding(self, condition_id: str) -> datetime | None:
         events = [(f.executed_at, 0, f.token_id, f.quantity) for f in self._fills.values() if f.condition_id == condition_id]
         events.extend((r.observed_at, 1, p.token_id, -p.quantity) for r in self._settled.values()
@@ -359,21 +365,25 @@ class Ledger:
 
     def _positions(self) -> tuple[Position, ...]:
         positions = {}
-        for fill in sorted(self._fills.values(), key=lambda f: (f.executed_at, f.trade_id)):
-            key = (fill.condition_id, fill.token_id)
-            previous = positions.get(key, Position(self.owner, *key, Decimal("0"), Decimal("0"), fill.executed_at))
-            positions[key] = replace(previous, quantity=previous.quantity + fill.quantity,
-                                     cost_usdc=previous.cost_usdc + fill.quantity * fill.price + fill.fee_usdc,
-                                     updated_at=max(previous.updated_at, fill.executed_at))
-        for receipt in sorted(self._settled.values(), key=lambda r: (r.observed_at, r.request.merge_id)):
-            for consumed in receipt.consumed_positions:
+        events = [(f.executed_at, 0, f.trade_id, f) for f in self._fills.values()]
+        events.extend((r.observed_at, 1, r.request.merge_id, r) for r in self._settled.values())
+        # Preserve execution arithmetic across partial settlements and later fills.
+        for at, _, _, fact in sorted(events):
+            if isinstance(fact, Fill):
+                key = (fact.condition_id, fact.token_id)
+                previous = positions.get(key, Position(self.owner, *key, Decimal("0"), Decimal("0"), at))
+                positions[key] = replace(previous, quantity=previous.quantity + fact.quantity,
+                                         cost_usdc=previous.cost_usdc + (fact.quantity * fact.price + fact.fee_usdc),
+                                         updated_at=max(previous.updated_at, at))
+                continue
+            for consumed in fact.consumed_positions:
                 key = (consumed.condition_id, consumed.token_id)
                 previous = positions.get(key)
                 if previous is None or previous.quantity < consumed.quantity or previous.cost_usdc < consumed.cost_usdc:
                     raise ValueError("receipt exceeds recorded owned inventory")
                 positions[key] = replace(previous, quantity=previous.quantity - consumed.quantity,
                                          cost_usdc=previous.cost_usdc - consumed.cost_usdc,
-                                         updated_at=max(previous.updated_at, receipt.observed_at))
+                                         updated_at=max(previous.updated_at, at))
         return tuple(positions[key] for key in sorted(positions))
 
     def _active(self, request: OrderRequest) -> bool:

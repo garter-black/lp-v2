@@ -199,7 +199,7 @@ class FakeSDK:
         consumed = []
         for position_key, position in zip(keys, legs):
             remaining = position.quantity - request.quantity
-            cost = position.cost_usdc * request.quantity / position.quantity
+            cost = position.cost_usdc if remaining == 0 else position.cost_usdc * request.quantity / position.quantity
             consumed.append(replace(position, quantity=request.quantity, cost_usdc=cost, updated_at=at))
             self._positions[position_key] = replace(
                 position, quantity=remaining,

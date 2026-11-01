@@ -1,6 +1,7 @@
 """One synchronous decision round; callers execute the returned intents."""
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -62,7 +63,9 @@ class Engine:
                                     pending=state.pending, safety_cushion=Decimal("0.02"),
                                     remaining_fee_per_pair=plan.fee_per_share[1 - index])
                 if quote is not None:
-                    places.append(self._place(quote, now, purpose="hedge"))
+                    quantity = quote.quantity - self.ledger.undelivered_quantity(cid, opposite_token)
+                    if quantity > 0 and quantity >= plan.market.min_order_size:
+                        places.append(self._place(replace(quote, quantity=quantity), now, purpose="hedge"))
         current = {p.market.condition_id: p for p in plans}
         ranked = (current[cid] for cid in self._ranked_ids if cid in current and eligible_market(current[cid].market))
         for plan in ranked:
