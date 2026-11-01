@@ -50,6 +50,7 @@ class Market:
 
 @dataclass(frozen=True, slots=True)
 class Book:
+    condition_id: str
     token_id: str
     best_bid: Decimal
     best_ask: Decimal
