@@ -13,8 +13,16 @@ class SDKPort(Protocol):
 
     def cancel_order(self, order_id: str, *, at: datetime) -> OrderResult: ...
 
-    def read_orders(self) -> tuple[Order, ...]:
-        """Authoritative history, including cancelled/filled orders and cumulative fills."""
+    def read_orders(self) -> tuple[Order | OrderResult, ...]:
+        """History including terminal/cumulative facts and original request provenance.
+
+        A recovery adapter must retain stable ownership, reservation terms and
+        request identities; an active-order list alone cannot prove absence.
+        Definitively rejected placements are FAILED OrderResults with no Order.
+        Unresolved intents may be UNKNOWN OrderResults. A fresh process needs
+        those facts too; an adapter unable to prove completeness must fail,
+        rather than certify an empty list as absence of in-flight submissions.
+        """
         ...
 
     def read_trades(self) -> tuple[Fill, ...]:
@@ -23,6 +31,14 @@ class SDKPort(Protocol):
 
     def read_positions(self) -> tuple[Position, ...]: ...
 
-    def read_balance(self) -> Balance: ...
+    def read_balance(self) -> Balance:
+        """Actual cash plus complete identity-bound merge attempt/result history.
+
+        Include pending/UNKNOWN, failed, acknowledged and settled attempts.
+        None means unavailable proof and prevents recovery. Only actual receipts
+        carry received cash/consumed costs, consistent with trade/position history.
+        A real adapter must obtain this proof; cash growth/acks cannot supply it.
+        """
+        ...
 
     def merge(self, request: MergeRequest, *, at: datetime) -> MergeResult: ...

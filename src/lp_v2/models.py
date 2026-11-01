@@ -68,12 +68,22 @@ class Quote:
 
 
 @dataclass(frozen=True, slots=True)
+class ReservationTerms:
+    """Original request provenance; fee inputs are explicit for each token."""
+    token_ids: tuple[str, str]
+    planned_quantity: Decimal
+    fee_per_share: tuple[Decimal, Decimal]
+    generation: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class OrderRequest:
     request_id: str
     owner: str
     quote: Quote
     created_at: datetime
     expires_at: datetime
+    reservation_terms: ReservationTerms | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +133,7 @@ class Position:
 class Balance:
     usdc: Decimal
     observed_at: datetime
+    merge_results: tuple["MergeResult", ...] | None = None  # Complete attempt history; None means unavailable.
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +145,7 @@ class MergeRequest:
     no_token_id: str
     quantity: Decimal
     created_at: datetime
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +154,7 @@ class MergeResult:
     outcome: Outcome
     received_usdc: Decimal  # Acknowledgement alone is not a wallet receipt.
     observed_at: datetime
+    consumed_positions: tuple[Position, ...] = ()  # Receipt's burned quantities and fee-inclusive costs.
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,3 +176,27 @@ class CapitalBreakdown:
     hedge_reserve: Decimal
     fee_reserve: Decimal
     total: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class MarketExposure:
+    condition_id: str
+    reserved_quantity: Decimal
+    fee_obligations: tuple[Decimal, Decimal]
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerSnapshot:
+    owner: str
+    startup_cap: Decimal
+    requests: tuple[OrderRequest, ...]
+    orders: tuple[Order, ...]
+    fills: tuple[Fill, ...]
+    positions: tuple[Position, ...]
+    pending: tuple[OrderRequest, ...]
+    rejected: tuple[OrderResult, ...]
+    merges: tuple[MergeResult, ...]
+    reservations: tuple[CapitalReservation, ...]
+    cash: Decimal | None
+    capital: CapitalBreakdown
+    realized_profit: Decimal

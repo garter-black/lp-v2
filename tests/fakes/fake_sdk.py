@@ -26,7 +26,7 @@ class FakeSDK:
         self._cancel_scripts = {}
         self._fill_notifications = []
         self._merge_scripts = {}
-        self._merge_results = {}
+        self._merge_results = {(r.request.owner, r.request.merge_id): r for r in balance.merge_results or ()}
 
     def script_place(self, request: OrderRequest, outcome: Outcome) -> None:
         self._place_scripts[request] = outcome
@@ -55,8 +55,30 @@ class FakeSDK:
         self._place_results[key] = result
         return result
 
-    def read_orders(self) -> tuple[Order, ...]:
-        return tuple(self._orders.values())
+    def resolve_place(self, request: OrderRequest, outcome: Outcome, *, at: datetime) -> OrderResult:
+        """Script an authoritative lookup result, not another placement attempt."""
+        key = (request.owner, request.request_id)
+        previous = self._place_results[key]
+        if previous.request != request:
+            raise ValueError("request identity reused with different intent")
+        if outcome not in (Outcome.SUCCESS, Outcome.FAILED) or at < previous.observed_at:
+            raise ValueError("resolution must be definitive and not precede submission")
+        if previous.outcome != Outcome.UNKNOWN:
+            if previous.outcome != outcome:
+                raise ValueError("resolution contradicts established placement")
+            return previous
+        order = None
+        if outcome == Outcome.SUCCESS:
+            order = Order(f"order-{len(self._orders) + 1}", request, Decimal("0"), request.quote.quantity,
+                          OrderStatus.LIVE, at, True)
+            self._orders[order.order_id] = order
+        result = OrderResult(request, outcome, order, at)
+        self._place_results[key] = result
+        return result
+
+    def read_orders(self) -> tuple[Order | OrderResult, ...]:
+        unbound = tuple(r for r in self._place_results.values() if r.order is None)
+        return (*self._orders.values(), *unbound)
 
     def script_cancel(self, order_id: str, outcome: Outcome, *, cancelled: bool) -> None:
         if (outcome == Outcome.SUCCESS and not cancelled) or (outcome == Outcome.FAILED and cancelled):
@@ -108,7 +130,7 @@ class FakeSDK:
         )
         self._positions[key] = replace(position, quantity=position.quantity + quantity,
                                        cost_usdc=position.cost_usdc + cost, updated_at=at)
-        self._balance = Balance(self._balance.usdc - cost, at)
+        self._balance = replace(self._balance, usdc=self._balance.usdc - cost, observed_at=at)
         self._trades[trade_id] = fill
         if deliver:
             self.deliver_fill(trade_id)
@@ -129,7 +151,11 @@ class FakeSDK:
         return tuple(self._positions.values())
 
     def read_balance(self) -> Balance:
-        return self._balance
+        return replace(self._balance, merge_results=tuple(self._merge_results.values()))
+
+    def script_wallet_balance(self, amount: Decimal, *, at: datetime) -> None:
+        _amount(amount, positive=False)
+        self._balance = replace(self._balance, usdc=amount, observed_at=at)
 
     def script_merge(self, request: MergeRequest, outcome: Outcome) -> None:
         self._merge_scripts[request] = outcome
@@ -169,13 +195,32 @@ class FakeSDK:
         legs = [self._positions[position_key] for position_key in keys]
         if any(leg.quantity < request.quantity for leg in legs):
             raise ValueError("insufficient owned pair inventory")
+        consumed = []
         for position_key, position in zip(keys, legs):
             remaining = position.quantity - request.quantity
+            cost = position.cost_usdc * request.quantity / position.quantity
+            consumed.append(replace(position, quantity=request.quantity, cost_usdc=cost, updated_at=at))
             self._positions[position_key] = replace(
                 position, quantity=remaining,
-                cost_usdc=position.cost_usdc * remaining / position.quantity, updated_at=at,
+                cost_usdc=position.cost_usdc - cost, updated_at=at,
             )
-        self._balance = Balance(self._balance.usdc + request.quantity, at)
-        result = replace(result, received_usdc=request.quantity, observed_at=at)
+        result = replace(result, received_usdc=request.quantity, observed_at=at, consumed_positions=tuple(consumed))
+        self._balance = replace(self._balance, usdc=self._balance.usdc + request.quantity, observed_at=at)
+        self._merge_results[key] = result
+        return result
+
+    def resolve_merge(self, request: MergeRequest, outcome: Outcome, *, at: datetime) -> MergeResult:
+        """Script a definitive lookup for an existing uncertain attempt."""
+        key = (request.owner, request.merge_id)
+        previous = self._merge_results[key]
+        if previous.request != request:
+            raise ValueError("merge identity reused with different intent")
+        if outcome not in (Outcome.SUCCESS, Outcome.FAILED) or at < previous.observed_at:
+            raise ValueError("resolution must be definitive and not precede submission")
+        if previous.outcome != Outcome.UNKNOWN:
+            if previous.outcome != outcome:
+                raise ValueError("resolution contradicts established merge result")
+            return previous
+        result = replace(previous, outcome=outcome, observed_at=at)
         self._merge_results[key] = result
         return result

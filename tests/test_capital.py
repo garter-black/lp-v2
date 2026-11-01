@@ -6,7 +6,7 @@ import pytest
 
 from lp_v2.capital import capital_breakdown, can_open_market, recovery_action_allowed
 from lp_v2.models import (
-    CapitalBreakdown, CapitalReservation, MergeRequest, MergeResult, Order, OrderRequest,
+    CapitalBreakdown, CapitalReservation, MergeRequest, MergeResult, Order, OrderRequest, OrderResult,
     OrderStatus, Outcome, Position, Quote,
 )
 
@@ -49,6 +49,32 @@ def test_components_count_each_identity_once():
         fee_reserve=Decimal("0.20"), hedge_reserve=Decimal("0.30"), total=Decimal("10.00"),
     )
     assert inputs == before
+
+
+@pytest.mark.parametrize("filled", [False, True])
+def test_explicit_rejection_releases_only_unused_capacity(filled):
+    yes, no = request("yes", "yes", "10", "0.40"), request("no", "no", "10", "0.55")
+    reservation = CapitalReservation(OWNER, "market-1", ("yes", "no"), Decimal("10"),
+                                     Decimal("0.04") if filled else Decimal("0"), ("yes", "no"))
+    rejected_no = OrderResult(no, Outcome.FAILED, None, AT)
+    rejected_yes = OrderResult(yes, Outcome.FAILED, None, AT)
+    orders = (replace(live(yes), status=OrderStatus.CANCELLED, filled_quantity=Decimal("4"),
+                      remaining_quantity=Decimal("0"), observed_at=AT),) if filled else ()
+    positions = (Position(OWNER, "market-1", "yes", Decimal("4"), Decimal("1.64"), AT),) if filled else ()
+    args = dict(reservations=(reservation,), positions=positions, orders=orders,
+                pending=(yes, no), merge_results=())
+    rejected = (rejected_no, rejected_no) if filled else (rejected_yes, rejected_no, rejected_no)
+    unknown = tuple(replace(result, outcome=Outcome.UNKNOWN) for result in rejected)
+    assert capital_breakdown(OWNER, **args, request_results=unknown).total == Decimal("10")
+    expected = (CapitalBreakdown(Decimal("1.64"), Decimal("0"), Decimal("0"),
+                                 Decimal("2.32"), Decimal("0.04"), Decimal("4")) if filled
+                else CapitalBreakdown(*(Decimal("0"),) * 6))
+    assert capital_breakdown(OWNER, **args, request_results=rejected) == expected
+    with pytest.raises(ValueError, match="alias"):
+        capital_breakdown(OWNER, **args, request_results=(replace(rejected_no, request=replace(no, quote=replace(no.quote, price=Decimal("0.56")))),))
+    if filled:
+        with pytest.raises(ValueError, match="rejection"):
+            capital_breakdown(OWNER, **args, request_results=(rejected_yes,))
 
 
 @pytest.mark.parametrize("inventory,headroom", [("4.10", "0.30"), ("4.00", "0.40")],
@@ -177,3 +203,46 @@ def test_restart_below_occupied_is_reduce_only(scenario):
         assert recovery_action_allowed("merge", covered_hedge=False) is True
         assert recovery_action_allowed("exit", covered_hedge=False) is True
         assert recovery_action_allowed("open_market", covered_hedge=True) is False
+
+
+@pytest.mark.parametrize("pending_hedge", [False, True], ids=["live_hedge", "pending_hedge"])
+def test_confirmed_cancel_releases_capacity_with_covered_hedge(pending_hedge):
+    initial = CapitalReservation(OWNER, "market-1", ("yes", "no"), Decimal("10"), Decimal("0.20"), ())
+    empty = dict(positions=(), orders=(), pending=(), merge_results=())
+    assert capital_breakdown(OWNER, reservations=(initial,), **empty) == CapitalBreakdown(
+        Decimal("0"), Decimal("0"), Decimal("0"), Decimal("9.80"), Decimal("0.20"), Decimal("10"),
+    )
+    unproved = replace(initial, request_ids=("yes", "no"))
+    assert capital_breakdown(OWNER, reservations=(unproved,), **empty).total == Decimal("10")
+    yes, no = live(request("yes", "yes", "10", "0.40")), live(request("no", "no", "10", "0.55"))
+    yes = replace(yes, status=OrderStatus.CANCELLED, filled_quantity=Decimal("4"), remaining_quantity=Decimal("0"), observed_at=AT)
+    no = replace(no, status=OrderStatus.CANCELLED, remaining_quantity=Decimal("0"), observed_at=AT)
+    hedge = live(request("hedge", "no", "4", "0.56"))
+    reservation = replace(initial, remaining_fee_usdc=Decimal("0.04"), request_ids=("yes", "no", "hedge"))
+    position = Position(OWNER, "market-1", "yes", Decimal("4"), Decimal("1.64"), AT)
+    hedge_orders = () if pending_hedge else (hedge,)
+    args = dict(reservations=(reservation,), positions=(position,), orders=(yes, no, *hedge_orders),
+                pending=(hedge.request,) if pending_hedge else (), merge_results=())
+    expected = CapitalBreakdown(Decimal("1.64"), Decimal("0") if pending_hedge else Decimal("2.24"),
+                                Decimal("2.24") if pending_hedge else Decimal("0"),
+                                Decimal("0.08"), Decimal("0.04"), Decimal("4"))
+    assert capital_breakdown(OWNER, **args) == expected
+    assert capital_breakdown(OWNER, **args) == expected
+    assert capital_breakdown(OWNER, **(args | {"reservations": (replace(reservation, planned_quantity=Decimal("4")),)})) == expected
+    assert capital_breakdown(OWNER, **(args | {"orders": (yes, no, yes, *hedge_orders)})) == expected
+    # Missing an original request's proof cannot be filled in by another cancellation.
+    assert capital_breakdown(OWNER, **(args | {"orders": (yes, *hedge_orders)})).total == Decimal("10")
+    for residual in (Decimal("6"), Decimal("0")):
+        uncertain = replace(yes, authoritative=False, remaining_quantity=residual)
+        assert capital_breakdown(OWNER, **(args | {"orders": (uncertain, no, *hedge_orders)})).total == Decimal("10")
+    # Fully filling smaller intents is not authority to release the rest of a plan.
+    small_yes = replace(live(request("small-yes", "yes", "4", "0.40")), status=OrderStatus.FILLED,
+                        filled_quantity=Decimal("4"), remaining_quantity=Decimal("0"))
+    small_no = replace(live(request("small-no", "no", "4", "0.56")), status=OrderStatus.FILLED,
+                       filled_quantity=Decimal("4"), remaining_quantity=Decimal("0"))
+    fill_only = replace(initial, request_ids=("small-yes", "small-no"), remaining_fee_usdc=Decimal("0"))
+    result = capital_breakdown(OWNER, reservations=(fill_only,), positions=(position,
+                               Position(OWNER, "market-1", "no", Decimal("4"), Decimal("2.28"), AT)),
+                               orders=(small_yes, small_no), pending=(), merge_results=())
+    assert result == CapitalBreakdown(Decimal("3.92"), Decimal("0"), Decimal("0"),
+                                     Decimal("6.08"), Decimal("0"), Decimal("10"))

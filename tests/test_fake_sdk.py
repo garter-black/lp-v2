@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from lp_v2.models import Balance, Fill, MergeRequest, OrderRequest, OrderStatus, Outcome, Position, Quote
+from lp_v2.models import Balance, Fill, MergeRequest, OrderRequest, OrderResult, OrderStatus, Outcome, Position, Quote
 from lp_v2.sdk_port import SDKPort
 from tests.fakes.fake_sdk import FakeSDK
 
@@ -63,6 +63,36 @@ def test_place_order_success():
         order.remaining_quantity = Decimal("20")
 
 
+@pytest.mark.parametrize("outcome", [Outcome.SUCCESS, Outcome.FAILED])
+def test_unknown_placement_requires_explicit_resolution(outcome):
+    fake = FakeSDK(balance=Balance(Decimal("100"), T0))
+    request = make_request()
+    fake.script_place(request, Outcome.UNKNOWN)
+    unknown = fake.place_order(request, at=T0)
+    assert unknown == OrderResult(request, Outcome.UNKNOWN, None, T0)
+    assert fake.read_orders() == (unknown,)  # Submitted intent proof; still no exchange Order.
+    assert fake.place_order(request, at=T1) == unknown
+    result = fake.resolve_place(request, outcome, at=T2)
+    assert result.request == request
+    assert result.outcome == outcome
+    if outcome == Outcome.SUCCESS:
+        assert result.order.request == request
+        assert result.order.authoritative is True
+        assert result.order.remaining_quantity == Decimal("10")
+        assert fake.read_orders() == (result.order,)
+    else:
+        assert result == OrderResult(request, Outcome.FAILED, None, T2)
+        assert fake.read_orders() == (result,)
+    assert fake.resolve_place(request, outcome, at=T2) == result
+    assert fake.place_order(request, at=T2) == result
+    assert fake.read_balance() == Balance(Decimal("100"), T0, ())
+    assert fake.read_positions() == fake.read_trades() == ()
+    with pytest.raises(ValueError, match="request identity"):
+        fake.resolve_place(replace(request, quote=replace(request.quote, quantity=Decimal("11"))), outcome, at=T2)
+    with pytest.raises(ValueError, match="contradicts"):
+        fake.resolve_place(request, Outcome.FAILED if outcome == Outcome.SUCCESS else Outcome.SUCCESS, at=T2)
+
+
 def test_full_fill(placed_sdk):
     fake, order = placed_sdk
     sdk: SDKPort = fake
@@ -76,13 +106,13 @@ def test_full_fill(placed_sdk):
     assert filled.filled_quantity == Decimal("10")
     assert filled.remaining_quantity == Decimal("0")
     assert sdk.read_positions() == (Position("lp-v2:run-1", "market-1", "yes", Decimal("10"), Decimal("4.10"), T1),)
-    assert sdk.read_balance() == Balance(Decimal("95.90"), T1)
+    assert sdk.read_balance() == Balance(Decimal("95.90"), T1, ())
     expected = Fill("trade-1", order.order_id, "buy-yes", "lp-v2:run-1", "market-1", "yes",
                     Decimal("10"), Decimal("0.40"), Decimal("0.10"), T1)
     assert sdk.read_trades() == (expected,)
     assert fake.execute_fill(order.order_id, **fill_args) == expected
     assert sdk.read_trades() == (expected,)
-    assert sdk.read_balance() == Balance(Decimal("95.90"), T1)
+    assert sdk.read_balance() == Balance(Decimal("95.90"), T1, ())
     assert sdk.read_positions() == (Position("lp-v2:run-1", "market-1", "yes", Decimal("10"), Decimal("4.10"), T1),)
 
 
@@ -97,7 +127,7 @@ def test_partial_fill(placed_sdk):
     assert partial.filled_quantity == Decimal("4")
     assert partial.remaining_quantity == Decimal("6")
     assert sdk.read_positions() == (Position("lp-v2:run-1", "market-1", "yes", Decimal("4"), Decimal("1.60"), T1),)
-    assert sdk.read_balance() == Balance(Decimal("98.40"), T1)
+    assert sdk.read_balance() == Balance(Decimal("98.40"), T1, ())
     first = Fill("partial-1", order.order_id, "buy-yes", "lp-v2:run-1", "market-1", "yes",
                  Decimal("4"), Decimal("0.40"), Decimal("0"), T1)
     assert sdk.read_trades() == (first,)
@@ -111,7 +141,7 @@ def test_partial_fill(placed_sdk):
     second = Fill("partial-2", order.order_id, "buy-yes", "lp-v2:run-1", "market-1", "yes",
                   Decimal("2"), Decimal("0.40"), Decimal("0.02"), T2)
     assert sdk.read_trades() == (first, second)
-    assert sdk.read_balance() == Balance(Decimal("97.58"), T2)
+    assert sdk.read_balance() == Balance(Decimal("97.58"), T2, ())
 
 
 def test_cancel_success(placed_sdk):
@@ -132,7 +162,7 @@ def test_cancel_success(placed_sdk):
     assert sdk.read_orders() == (cancelled,)
     assert sdk.read_trades() == (fill,)
     assert sdk.read_positions() == (Position("lp-v2:run-1", "market-1", "yes", Decimal("4"), Decimal("1.64"), T1),)
-    assert sdk.read_balance() == Balance(Decimal("98.36"), T1)
+    assert sdk.read_balance() == Balance(Decimal("98.36"), T1, ())
     with pytest.raises(ValueError, match="live order"):
         fake.execute_fill(order.order_id, trade_id="impossible-new-fill", quantity=Decimal("1"),
                           price=Decimal("0.40"), fee_usdc=Decimal("0"), at=T2 + timedelta(seconds=1))
@@ -166,7 +196,7 @@ def test_cancel_unknown_then_readback(placed_sdk, cancelled, status, remaining):
     assert result.order.authoritative is False
     assert sdk.read_trades() == (fill,)
     assert sdk.read_positions() == (Position("lp-v2:run-1", "market-1", "yes", Decimal("4"), Decimal("1.60"), T1),)
-    assert sdk.read_balance() == Balance(Decimal("98.40"), T1)
+    assert sdk.read_balance() == Balance(Decimal("98.40"), T1, ())
 
 
 def test_late_fill_after_cancel(placed_sdk):
@@ -190,12 +220,12 @@ def test_late_fill_after_cancel(placed_sdk):
     assert sdk.read_trades() == (expected,)
     assert sdk.read_orders() == (cancelled.order,)
     assert sdk.read_positions() == (Position("lp-v2:run-1", "market-1", "yes", Decimal("4"), Decimal("1.64"), T1),)
-    assert sdk.read_balance() == Balance(Decimal("98.36"), T1)
+    assert sdk.read_balance() == Balance(Decimal("98.36"), T1, ())
     fake.deliver_fill("late-notice")
     assert fake.take_fill_notifications() == (expected,)
     assert sdk.read_trades() == (expected,)
     assert sdk.read_positions() == (Position("lp-v2:run-1", "market-1", "yes", Decimal("4"), Decimal("1.64"), T1),)
-    assert sdk.read_balance() == Balance(Decimal("98.36"), T1)
+    assert sdk.read_balance() == Balance(Decimal("98.36"), T1, ())
 
 
 @pytest.mark.parametrize("outcome", [Outcome.SUCCESS, Outcome.FAILED, Outcome.UNKNOWN],
@@ -217,7 +247,7 @@ def test_merge_outcomes(outcome):
     assert result.request == request
     assert result.outcome == outcome
     assert result.received_usdc == Decimal("0")
-    assert sdk.read_balance() == Balance(Decimal("100"), T0)
+    assert sdk.read_balance() == Balance(Decimal("100"), T0, (result,))
     assert sdk.read_positions() == positions
     assert sdk.merge(request, at=T2) == result
     with pytest.raises(ValueError, match="merge identity"):
@@ -228,7 +258,11 @@ def test_merge_outcomes(outcome):
         assert receipt.request == request
         assert receipt.outcome == Outcome.SUCCESS
         assert receipt.received_usdc == Decimal("4")
-        assert sdk.read_balance() == Balance(Decimal("104"), T2)
+        assert receipt.consumed_positions == (
+            Position("lp-v2:run-1", "market-1", "yes", Decimal("4"), Decimal("1.64"), T2),
+            Position("lp-v2:run-1", "market-1", "no", Decimal("4"), Decimal("2.20"), T2),
+        )
+        assert sdk.read_balance() == Balance(Decimal("104"), T2, (receipt,))
         expected_positions = (
             Position("lp-v2:run-1", "market-1", "yes", Decimal("6"), Decimal("2.46"), T2),
             Position("lp-v2:run-1", "market-1", "no", Decimal("6"), Decimal("3.30"), T2),
@@ -237,10 +271,10 @@ def test_merge_outcomes(outcome):
         assert sdk.read_positions() == expected_positions
         assert fake.receive_merge(request, at=T2 + timedelta(seconds=1)) == receipt
         assert sdk.merge(request, at=T2 + timedelta(seconds=1)) == receipt
-        assert sdk.read_balance() == Balance(Decimal("104"), T2)
+        assert sdk.read_balance() == Balance(Decimal("104"), T2, (receipt,))
         assert sdk.read_positions() == expected_positions
     else:
         with pytest.raises(ValueError, match="successful acknowledgement"):
             fake.receive_merge(request, at=T2)
-        assert sdk.read_balance() == Balance(Decimal("100"), T0)
+        assert sdk.read_balance() == Balance(Decimal("100"), T0, (result,))
         assert sdk.read_positions() == positions

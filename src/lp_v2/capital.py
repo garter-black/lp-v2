@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 from lp_v2.models import (
-    CapitalBreakdown, CapitalReservation, MergeResult, Order, OrderRequest, OrderStatus, Outcome, Position,
+    CapitalBreakdown, CapitalReservation, MarketExposure, MergeResult, Order, OrderRequest, OrderResult, OrderStatus, Outcome, Position,
 )
 
 
@@ -31,7 +31,22 @@ def capital_breakdown(
     orders: Sequence[Order],
     pending: Sequence[OrderRequest],
     merge_results: Sequence[MergeResult],
+    request_results: Sequence[OrderResult] = (),
 ) -> CapitalBreakdown:
+    return capital_exposure(owner, reservations=reservations, positions=positions, orders=orders,
+                            pending=pending, merge_results=merge_results, request_results=request_results)[0]
+
+
+def capital_exposure(
+    owner: str,
+    *,
+    reservations: Sequence[CapitalReservation],
+    positions: Sequence[Position],
+    orders: Sequence[Order],
+    pending: Sequence[OrderRequest],
+    merge_results: Sequence[MergeResult],
+    request_results: Sequence[OrderResult] = (),
+) -> tuple[CapitalBreakdown, tuple[MarketExposure, ...]]:
     if not owner:
         raise ValueError("owner is required")
     allocations = _unique((r for r in reservations if r.owner == owner), lambda r: r.condition_id)
@@ -39,6 +54,8 @@ def capital_breakdown(
     known = _unique((o for o in orders if o.request.owner == owner), lambda o: o.request.request_id)
     requests = _unique((r for r in pending if r.owner == owner), lambda r: r.request_id)
     receipts = _unique((r for r in merge_results if r.request.owner == owner), lambda r: r.request.merge_id)
+    rejected = _unique((r for r in request_results if r.request.owner == owner
+                        and r.outcome == Outcome.FAILED and r.order is None), lambda r: r.request.request_id)
     if len({order.order_id for order in known.values()}) != len(known):
         raise ValueError("order identity cannot identify two requests")
     for reservation in allocations.values():
@@ -57,7 +74,7 @@ def capital_breakdown(
     for position in holdings.values():
         allocation_for(position.condition_id, position.token_id)
         _amounts(position.quantity, position.cost_usdc)
-    for request in (*requests.values(), *(order.request for order in known.values())):
+    for request in (*requests.values(), *(order.request for order in known.values()), *(r.request for r in rejected.values())):
         reservation = allocation_for(request.quote.condition_id, request.quote.token_id)
         if request.request_id not in reservation.request_ids:
             raise ValueError("owned request is not tracked by its reservation")
@@ -74,12 +91,19 @@ def capital_breakdown(
             raise ValueError("order quantities exceed original intent")
         if key in requests and requests[key] != order.request:
             raise ValueError("pending alias differs from known order intent")
+    for key, result in rejected.items():
+        if key in known:
+            raise ValueError("placement rejection contradicts an existing order")
+        if key in requests and requests[key] != result.request:
+            raise ValueError("rejected alias differs from pending intent")
+    requests = {key: request for key, request in requests.items() if key not in rejected}
     for result in receipts.values():
         _amounts(result.request.quantity, result.received_usdc)
         if result.received_usdc and (result.outcome != Outcome.SUCCESS or result.received_usdc != result.request.quantity):
             raise ValueError("receipt must confirm the exact successful merge quantity")
 
     totals = dict.fromkeys(("inventory_cost", "open_buys", "pending_requests", "hedge_reserve", "fee_reserve"), Decimal("0"))
+    exposures = []
     for cid, reservation in allocations.items():
         market_orders = [o for o in known.values() if o.request.quote.condition_id == cid]
         filled = {token: sum((o.filled_quantity for o in market_orders if o.request.quote.token_id == token), Decimal("0"))
@@ -98,22 +122,30 @@ def capital_breakdown(
                     merged += result.received_usdc
         if merged > min(filled.values()):
             raise ValueError("settlement exceeds recorded matched pairs")
-        potential = []
+        potential, completed = [], []
         for token in reservation.token_ids:
             held_quantity = holdings[(cid, token)].quantity if (cid, token) in holdings else Decimal("0")
             live_quantity = sum((o.remaining_quantity for o in market_orders if o.request.quote.token_id == token
                                  and (o.status == OrderStatus.LIVE or not o.authoritative)), Decimal("0"))
             pending_quantity = sum((r.quote.quantity for key, r in requests.items() if key not in known
                                     and r.quote.condition_id == cid and r.quote.token_id == token), Decimal("0"))
-            potential.append(max(held_quantity, filled[token] - merged) + live_quantity + pending_quantity)
+            completed.append(max(held_quantity, filled[token] - merged))
+            potential.append(completed[-1] + live_quantity + pending_quantity)
         remaining_pairs = max(potential)
-        tracked = [known.get(key) for key in reservation.request_ids]
-        closed = bool(tracked) and all(
-            order is not None and order.request.quote.condition_id == cid and order.authoritative
-            and order.status in (OrderStatus.CANCELLED, OrderStatus.FILLED) for order in tracked
-        )
-        closed = closed and {order.request.quote.token_id for order in tracked} == set(reservation.token_ids)
-        reserved_pairs = remaining_pairs if closed else max(reservation.planned_quantity, remaining_pairs)
+        accounted = {o.request.request_id: o.request for o in market_orders
+                     if (o.authoritative and o.status in (OrderStatus.CANCELLED, OrderStatus.FILLED))
+                     or o.filled_quantity + o.remaining_quantity == o.request.quote.quantity}
+        accounted.update((key, r) for key, r in requests.items() if r.quote.condition_id == cid and key not in known)
+        accounted.update((key, r.request) for key, r in rejected.items() if r.request.quote.condition_id == cid)
+        complete = bool(reservation.request_ids) and set(reservation.request_ids) <= accounted.keys()
+        if complete:
+            complete = {accounted[key].quote.token_id for key in reservation.request_ids} == set(reservation.token_ids)
+        released = merged > 0 or any(o.authoritative and o.status == OrderStatus.CANCELLED
+                                    and o.filled_quantity < o.request.quote.quantity for o in market_orders)
+        released = released or any(r.request.quote.condition_id == cid and r.request.quote.quantity > 0 for r in rejected.values())
+        # Complete possible exposure bounds a confirmed release; a fill alone cannot authorize one.
+        reserved_pairs = remaining_pairs if complete and released else max(reservation.planned_quantity, remaining_pairs)
+        exposures.append(MarketExposure(cid, reserved_pairs, tuple(max(Decimal("0"), reserved_pairs - q) for q in completed)))
         inventory = sum((p.cost_usdc for p in holdings.values() if p.condition_id == cid), Decimal("0"))
         open_buys = sum((o.remaining_quantity * o.request.quote.price for o in known.values()
                          if o.request.quote.condition_id == cid
@@ -127,7 +159,7 @@ def capital_breakdown(
         totals["pending_requests"] += pending_cost
         totals["hedge_reserve"] += hedge
         totals["fee_reserve"] += fees
-    return CapitalBreakdown(**totals, total=sum(totals.values(), Decimal("0")))
+    return CapitalBreakdown(**totals, total=sum(totals.values(), Decimal("0"))), tuple(exposures)
 
 
 def can_open_market(
