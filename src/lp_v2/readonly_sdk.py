@@ -95,7 +95,7 @@ class ReadOnlySDK:
         return rows
 
     @staticmethod
-    def __metadata_market(raw, now):
+    def __metadata_market(raw, now, *, recovery=False):
         """Score facts are independent of whether a proposal can safely exist."""
         from decimal import Decimal as D
         from lp_v2.models import Market, Token
@@ -118,18 +118,18 @@ class ReadOnlySDK:
         rates = [number(r.rewards_daily_rate) for r in (rw.clob_rewards or ())
                  if str(r.condition_id) == cid and r.asset_address.lower() == '0x2791bca1f2de4661ed88a30c99a7a9449aa84174'
                  and r.start_date <= now.date() and (r.end_date is None or r.end_date >= now.date())]
-        if not rates:
+        if not rates and not recovery:
             raise _Excluded('缺少有效奖励输入')
         bid, ask = number(raw.prices.best_bid, True), number(raw.prices.best_ask, True)
         if not 0 < bid <= ask < 1:
             raise _Excluded('市场价格缺失或无效')
         return Market(cid, (Token(str(tokens[0]), 'Yes'), Token(str(tokens[1]), 'No')),
-            number(t.minimum_tick_size, True), number(t.minimum_order_size, True), number(rw.rewards_min_size, True),
+            number(t.minimum_tick_size, True), number(t.minimum_order_size, True), number(rw.rewards_min_size, True) if not recovery or rw.rewards_min_size else number(t.minimum_order_size, True),
             float(bid), float(ask), float(number(raw.metrics.liquidity_num)), float(number(raw.metrics.volume_24hr)),
-            float(sum(rates)), float(number(rw.rewards_max_spread, True)), 0.0, 0, False, True,
+            float(sum(rates)), float(number(rw.rewards_max_spread, True)), 0.0, 0, False, bool(rates),
             any(tag.slug == 'politics' for tag in raw.tags), None, raw.state.accepting_orders)
 
-    def __map_market(self, raw, now, m):
+    def __map_market(self, raw, now, m, *, recovery=False):
         from dataclasses import replace
         from decimal import Decimal as D
         from lp_v2.models import Book, MarketPlan
@@ -139,9 +139,9 @@ class ReadOnlySDK:
                 and st.enable_order_book is True and m.political is True):
             raise _Excluded('市场状态或政治分类缺失或不合格')
         midpoint = (D(str(m.best_bid)) + D(str(m.best_ask))) / 2
-        if not D('0.10') <= midpoint <= D('0.90'):
+        if not recovery and not D('0.10') <= midpoint <= D('0.90'):
             raise _Excluded(f'中间价 {midpoint} 超出 0.10–0.90')
-        if m.liquidity_num < 1000:
+        if not recovery and m.liquidity_num < 1000:
             raise _Excluded('流动性低于 1000')
         # Typed Gamma omits in_play; absence is never interpreted as false.
         response = self.__http.get('https://clob.polymarket.com/markets/' + cid)
@@ -167,7 +167,7 @@ class ReadOnlySDK:
         midpoint = (books[0].best_bid + books[0].best_ask) / 2
         return dict(score=str(score_market(m).score), eligible=eligible,
                     skip_reason=None if eligible else f'中间价 {midpoint} 或流动性不符合条件',
-                    plan=MarketPlan(m, tuple(books), max(m.min_order_size, m.rewards_min_size), (D('0'), D('0'))) if eligible else None)
+                    plan=MarketPlan(m, tuple(books), max(m.min_order_size, m.rewards_min_size), (D('0'), D('0'))) if eligible or recovery else None)
 
     def __account_get(self, path, now, params):
         self.__audit.require_ready()
@@ -223,3 +223,28 @@ class ReadOnlySDK:
     def wallet_tail(self):
         c = self.__credentials
         return c.wallet_address[-4:] if c is not None else UNKNOWN
+
+    def read_fixed_market(self, now, condition_id):
+        self.__audit.require_ready()
+        found=[]
+        for page in self.__public.list_markets(condition_ids=[condition_id],include_tag=True,page_size=20):
+            for raw in page.items:
+                if str(raw.condition_id) != condition_id:
+                    raise ValueError('fixed market identity mismatch')
+                m=self.__metadata_market(raw,now,recovery=True)
+                from lp_v2.scoring import score_market
+                row=dict(title=raw.question or UNKNOWN,condition_id=condition_id,score=str(score_market(m).score))
+                row.update(self.__map_market(raw,now,m,recovery=True))
+                found.append(row)
+        if len(found) != 1:
+            raise ValueError('fixed market unavailable or ambiguous')
+        return found
+
+    def read_region_policy(self):
+        self.__audit.require_ready()
+        response=self.__http.get('https://polymarket.com/api/geoblock')
+        response.raise_for_status()
+        raw=response.json()
+        if not isinstance(raw,dict):
+            raise ValueError('region identity unavailable')
+        return dict(blocked=raw.get('blocked'),country=raw.get('country'))

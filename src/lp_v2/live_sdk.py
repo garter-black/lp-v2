@@ -1,0 +1,398 @@
+"""Fixed-market execution boundary; durable intents are never blindly retried."""
+from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from decimal import Decimal as D
+from polymarket.models.clob.order_response import AcceptedOrder, RejectedOrder
+from lp_v2.models import Balance, Fill, Position, MergeResult, Order, OrderResult, OrderStatus, Outcome
+
+
+class LiveSDK:
+    def __init__(self, client, journal, *, owner, condition_id, token_ids, wallet, signer):
+        self.client, self.journal = client, journal
+        self.owner, self.condition_id, self.token_ids = owner, condition_id, tuple(token_ids)
+        self.wallet, self.signer = wallet, signer
+        self.rpc = self.relayer = self.http = None
+
+    def _validate(self, request, at):
+        q, terms = request.quote, request.reservation_terms
+        if (request.owner != self.owner or q.condition_id != self.condition_id or q.token_id not in self.token_ids
+                or terms is None or terms.token_ids != self.token_ids or not request.request_id
+                or not q.price.is_finite() or not 0 < q.price < 1
+                or not q.quantity.is_finite() or q.quantity <= 0
+                or request.expires_at != request.created_at + timedelta(hours=1)
+                or not request.created_at <= at < request.expires_at):
+            raise ValueError('invalid fixed-market intent')
+
+    def place_order(self, request, *, at):
+        self._validate(request, at)
+        existing = self._history()
+        if request.request_id in existing:
+            result = existing[request.request_id]
+            if result.request != request:
+                raise ValueError('request identity reused')
+            return result if isinstance(result, OrderResult) else OrderResult(request, Outcome.SUCCESS, result, at)
+        ceiling = D('.98') - request.quote.price - sum(request.reservation_terms.fee_per_share)
+        if request.purpose == 'hedge':
+            opposite = next((p for p in self.read_positions() if p.token_id != request.quote.token_id and p.quantity > 0), None)
+            if opposite is None:
+                raise ValueError('hedge ceiling requires opposite cost proof')
+            index = self.token_ids.index(request.quote.token_id)
+            ceiling = D('.98') - opposite.cost_usdc/opposite.quantity - request.reservation_terms.fee_per_share[index]
+            if request.quote.price > ceiling:
+                raise ValueError('hedge exceeds cost ceiling')
+        self.journal.append('intent', dict(request=request, hedge_ceiling=ceiling))
+        q = request.quote
+        order, outcome, diagnostic = None, Outcome.UNKNOWN, 'ambiguous submission'
+        try:
+            signed = self.client.create_limit_order(token_id=q.token_id, price=q.price, size=q.quantity,
+                side='BUY', post_only=True, expiration=int(request.expires_at.timestamp()))
+            if (signed.token_id != q.token_id or signed.side != 'BUY' or signed.post_only is not True
+                    or signed.order_type != 'GTD' or signed.expiration != int(request.expires_at.timestamp())
+                    or signed.maker.lower() != self.wallet.lower() or signed.signer.lower() != self.signer.lower()):
+                raise ValueError('signed identity mismatch')
+            self.journal.append('signed', dict(request_id=request.request_id, salt=signed.salt, token_id=signed.token_id,
+                maker=signed.maker, signer=signed.signer, maker_amount=signed.maker_amount,
+                taker_amount=signed.taker_amount, expiration=signed.expiration, timestamp=signed.timestamp,
+                order_ids=_order_ids(signed)))
+            response = self.client.post_order(signed)
+            if isinstance(response, AcceptedOrder) and response.order_id:
+                order = Order(response.order_id, request, D('0'), q.quantity, OrderStatus.LIVE, at, False)
+                outcome, diagnostic = Outcome.SUCCESS, 'accepted awaiting readback'
+            elif isinstance(response, RejectedOrder) and response.code != 'unknown':
+                outcome, diagnostic = Outcome.FAILED, 'explicit rejection'
+        except Exception:
+            diagnostic = 'submission unresolved'
+        result = OrderResult(request, outcome, order, at)
+        self.journal.append('order_result', result)
+        # Diagnostics are fixed application text; raw exceptions may contain credentials.
+        if outcome != Outcome.SUCCESS:
+            self.journal.append('diagnostic', dict(request_id=request.request_id, reason=diagnostic, at=at))
+        return result
+
+    def _history(self):
+        requests = {p['request'].request_id: p['request'] for _, p in self.journal.events('intent')}
+        results = {key: OrderResult(r, Outcome.UNKNOWN, None, r.created_at) for key, r in requests.items()}
+        for _, result in self.journal.events('order_result'):
+            results[result.request.request_id] = result
+        return results
+
+    def read_orders(self):
+        results = self._history()
+        signed = {p['request_id']: p for _, p in self.journal.events('signed')}
+        cancels = {p['order_id']: p['at'] for _, p in self.journal.events('cancel_intent')}
+        for key, previous in results.items():
+            if previous.outcome == Outcome.FAILED and previous.order is None:
+                continue
+            candidates = (previous.order.order_id,) if previous.order else signed.get(key, {}).get('order_ids', ())
+            for oid in candidates:
+                try:
+                    raw = self.client.get_order(order_id=oid)
+                except Exception:
+                    # An absent active order or 404 never rejects an unresolved intent.
+                    continue
+                r, q = previous.request, previous.request.quote
+                if (raw.id != oid or raw.maker_address.lower() != self.wallet.lower()
+                        or raw.condition_id != self.condition_id or raw.token_id != q.token_id
+                        or raw.side != 'BUY' or raw.price != q.price or raw.original_size != q.quantity
+                        or raw.order_type != 'GTD' or raw.expires_at != datetime.fromtimestamp(int(r.expires_at.timestamp()), UTC)):
+                    raise ValueError('owned order readback identity mismatch')
+                status = {'LIVE': OrderStatus.LIVE, 'MATCHED': OrderStatus.FILLED,
+                          'CANCELED': OrderStatus.CANCELLED, 'CANCELLED': OrderStatus.CANCELLED}.get(raw.status)
+                if status is None or not D('0') <= raw.size_matched <= q.quantity:
+                    raise ValueError('unknown order status or quantity')
+                remaining = q.quantity - raw.size_matched if status == OrderStatus.LIVE else D('0')
+                observed = previous.observed_at
+                order = Order(oid, r, raw.size_matched, remaining, status, observed, True, cancels.get(oid))
+                if previous.order != order or previous.outcome != Outcome.SUCCESS:
+                    result = OrderResult(r, Outcome.SUCCESS, order, observed)
+                    self.journal.append('order_result', result)
+                    results[key] = result
+                break
+        return tuple(r.order if r.order else r for r in results.values())
+
+    def known_open_order_ids(self):
+        """Durable ownership only; this read never depends on exchange availability."""
+        return tuple(sorted(r.order.order_id for r in self._history().values() if r.order is not None
+                            and (not r.order.authoritative or r.order.status == OrderStatus.LIVE)))
+
+    def cancel_order(self, order_id, *, at):
+        known = next((r for r in self._history().values() if r.order and r.order.order_id == order_id), None)
+        if known is None:
+            raise ValueError('cannot cancel foreign or unknown order')
+        self.journal.append('cancel_intent', dict(order_id=order_id, at=at))
+        outcome = Outcome.UNKNOWN
+        try:
+            raw = self.client.cancel_order(order_id=order_id)
+            if order_id in raw.canceled:
+                outcome = Outcome.SUCCESS
+            elif order_id in raw.not_canceled:
+                outcome = Outcome.FAILED
+        except Exception:
+            pass
+        order = replace(known.order, authoritative=False, observed_at=at, cancel_requested_at=at)
+        result = OrderResult(known.request, outcome, order, at)
+        self.journal.append('order_result', result)
+        self.journal.append('diagnostic', dict(order_id=order_id, reason='cancel '+outcome.value, at=at))
+        return result
+
+    def read_trades(self):
+        orders = {o.order_id: o.request for o in self.read_orders() if isinstance(o, Order)}
+        known = {f.trade_id: f for _, f in self.journal.events('fill')}
+        for page in self.client.list_account_trades(market=self.condition_id, maker_address=self.wallet):
+            for raw in page.items:
+                for maker in raw.maker_orders:
+                    if maker.order_id not in orders:
+                        continue
+                    r = orders[maker.order_id]
+                    if (raw.condition_id != self.condition_id or maker.token_id != r.quote.token_id
+                            or maker.maker_address.lower() != self.wallet.lower() or maker.side != 'BUY'
+                            or maker.fee_rate_bps != 0):
+                        raise ValueError('fill provenance or fee unavailable')
+                    if raw.status == 'FAILED':
+                        continue
+                    if raw.status != 'CONFIRMED':
+                        raise ValueError('owned fill is not settled')
+                    fill = Fill(raw.id+':'+maker.order_id, maker.order_id, r.request_id, self.owner,
+                        self.condition_id, maker.token_id, maker.matched_amount, maker.price, D('0'), raw.matched_at)
+                    if fill.trade_id in known and known[fill.trade_id] != fill:
+                        raise ValueError('fill identity changed')
+                    if fill.trade_id not in known:
+                        self.journal.append('fill', fill)
+                        known[fill.trade_id] = fill
+        return tuple(known.values())
+
+    def _positions(self):
+        positions = {}
+        events = [(f.executed_at,0,f.trade_id,f) for _,f in self.journal.events('fill')]
+        events += [(r.observed_at,1,r.request.merge_id,r) for r in self._merge_results().values() if r.received_usdc]
+        for _,_,_,fact in sorted(events):
+            if isinstance(fact, Fill):
+                previous = positions.get(fact.token_id, Position(self.owner,self.condition_id,fact.token_id,D('0'),D('0'),fact.executed_at))
+                positions[fact.token_id] = replace(previous, quantity=previous.quantity+fact.quantity,
+                    cost_usdc=previous.cost_usdc+fact.quantity*fact.price+fact.fee_usdc, updated_at=max(previous.updated_at,fact.executed_at))
+            else:
+                for consumed in fact.consumed_positions:
+                    previous = positions[consumed.token_id]
+                    positions[consumed.token_id] = replace(previous,quantity=previous.quantity-consumed.quantity,
+                        cost_usdc=previous.cost_usdc-consumed.cost_usdc,updated_at=max(previous.updated_at,fact.observed_at))
+        return positions
+
+    def read_positions(self):
+        self.read_trades()
+        self._refresh_merges()
+        positions = self._positions()
+        for token in self.token_ids:
+            raw = self.client.get_balance_allowance(asset_type='CONDITIONAL', token_id=token)
+            actual = D(raw.balance)/1000000
+            expected = positions[token].quantity if token in positions else D('0')
+            if actual != expected:
+                raise ValueError('position readback does not match owned trade proof')
+        return tuple(positions.values())
+
+    def _cash(self):
+        return D(self.client.get_balance_allowance(asset_type='COLLATERAL').balance)/1000000
+
+    def read_balance(self):
+        self._refresh_merges()
+        return Balance(self._cash(), datetime.now(UTC), tuple(self._merge_results().values()))
+
+    def _merge_results(self):
+        results = {p['request'].merge_id: MergeResult(p['request'],Outcome.UNKNOWN,D('0'),p['request'].created_at)
+                   for _,p in self.journal.events('merge_intent')}
+        for _,r in self.journal.events('merge_result'):
+            results[r.request.merge_id] = r
+        return results
+
+    def merge(self, request, *, at):
+        existing = self._merge_results().get(request.merge_id)
+        if existing is not None:
+            if existing.request != request:
+                raise ValueError('merge identity reused')
+            return existing
+        if (request.owner != self.owner or request.condition_id != self.condition_id
+                or (request.yes_token_id,request.no_token_id) != self.token_ids
+                or not request.quantity.is_finite() or request.quantity <= 0
+                or request.quantity*1000000 != int(request.quantity*1000000)):
+            raise ValueError('invalid fixed-market merge')
+        positions = {p.token_id:p for p in self.read_positions()}
+        if any(token not in positions or positions[token].quantity < request.quantity for token in self.token_ids):
+            raise ValueError('merge lacks paired owned inventory')
+        self.journal.append('merge_intent',dict(request=request,cash=self._cash(),positions=tuple(positions.values())))
+        try:
+            handle = self.client.merge_positions(condition_id=self.condition_id,amount=int(request.quantity*1000000),metadata=request.merge_id)
+            from polymarket.transactions import SyncGaslessTransactionHandle
+            if not isinstance(handle,SyncGaslessTransactionHandle):
+                raise ValueError('only Proxy gasless merge is supported')
+            self.journal.append('merge_handle',dict(merge_id=request.merge_id,transaction_id=handle.transaction_id,transaction_hash=handle.transaction_hash))
+        except Exception:
+            self.journal.append('diagnostic',dict(at=at,merge_id=request.merge_id,reason='merge unresolved'))
+        return self._merge_results()[request.merge_id]
+
+    def _refresh_merges(self):
+        if self.rpc is None or self.relayer is None:
+            return
+        from polymarket._internal.actions.relayer.poll import fetch_gasless_transaction_sync
+        handles = {p['merge_id']:p for _,p in self.journal.events('merge_handle')}
+        for _,baseline in self.journal.events('merge_intent'):
+            r = baseline['request']
+            previous = self._merge_results()[r.merge_id]
+            if previous.received_usdc or previous.outcome == Outcome.FAILED or r.merge_id not in handles:
+                continue
+            try:
+                handle = handles[r.merge_id]
+                tx = fetch_gasless_transaction_sync(self.relayer,transaction_id=handle['transaction_id'])
+                if tx.transaction_id != handle['transaction_id']:
+                    continue
+                if tx.state in ('STATE_FAILED','STATE_INVALID'):
+                    self.journal.append('merge_result',MergeResult(r,Outcome.FAILED,D('0'),datetime.now(UTC)))
+                    continue
+                txhash = tx.transaction_hash
+                if tx.state != 'STATE_CONFIRMED' or not txhash or (handle['transaction_hash'] and handle['transaction_hash'] != txhash):
+                    continue
+                receipt = self.rpc.eth_get_transaction_receipt(txhash)
+                if not receipt or receipt.get('transactionHash') != txhash:
+                    continue
+                at = datetime.now(UTC)
+                if receipt.get('status') == '0x0':
+                    self.journal.append('merge_result',MergeResult(r,Outcome.FAILED,D('0'),at))
+                    continue
+                if receipt.get('status') != '0x1' or not _receipt_proves_merge(receipt,r,self.wallet):
+                    continue
+                if self._cash() != baseline['cash']+r.quantity:
+                    continue
+                before = {p.token_id:p for p in baseline['positions']}
+                if any(D(self.client.get_balance_allowance(asset_type='CONDITIONAL',token_id=t).balance)/1000000 != before[t].quantity-r.quantity for t in self.token_ids):
+                    continue
+                consumed = tuple(replace(before[t],quantity=r.quantity,
+                    cost_usdc=before[t].cost_usdc if r.quantity == before[t].quantity else before[t].cost_usdc*r.quantity/before[t].quantity,
+                    updated_at=at) for t in self.token_ids)
+                self.journal.append('merge_receipt',dict(merge_id=r.merge_id,receipt=receipt,at=at))
+                self.journal.append('merge_result',MergeResult(r,Outcome.SUCCESS,r.quantity,at,consumed))
+            except Exception:
+                # Read failures leave the original attempt and full reservation intact.
+                continue
+
+    def read_income(self, now):
+        from polymarket.environments import PRODUCTION
+        day = now.astimezone(UTC).date()
+        history = self.journal.events('income')
+        if history:
+            previous = history[-1][1]
+            if previous['at'].astimezone(UTC).date() == day and 0 <= (now-previous['at']).total_seconds() < 60:
+                return previous
+        result = dict(at=now,reward_today='UNKNOWN',rebate_today='UNKNOWN',reward_share='UNKNOWN',scoring='UNKNOWN')
+        assets = {PRODUCTION.collateral_token.lower(),'0x2791bca1f2de4661ed88a30c99a7a9449aa84174'}
+        def amount(value):
+            if isinstance(value,bool):
+                raise ValueError('invalid amount')
+            number = D(str(value))
+            if not number.is_finite() or number < 0:
+                raise ValueError('invalid amount')
+            return number
+        try:
+            scoring = {}
+            for r in self._history().values():
+                if r.order is not None:
+                    flag = self.client.get_order_scoring(order_id=r.order.order_id)
+                    if type(flag) is not bool:
+                        raise ValueError('invalid scoring fact')
+                    scoring[r.order.order_id] = flag
+            result['scoring'] = scoring
+        except Exception:
+            pass
+        try:
+            total = D('0')
+            for page in self.client.list_user_earnings_for_day(date=day.isoformat()):
+                for row in page.items:
+                    if row.condition_id != self.condition_id:
+                        continue
+                    if (row.date.astimezone(UTC).date() != day or row.maker_address.lower() != self.wallet.lower()
+                            or row.asset_address.lower() not in assets):
+                        raise ValueError('earning identity mismatch')
+                    total += amount(row.earnings)*amount(row.asset_rate)
+            result['reward_today'] = total
+        except Exception:
+            pass
+        try:
+            share = amount(self.client.get_reward_percentages()[self.condition_id])
+            if share > 100:
+                raise ValueError('invalid reward share')
+            result['reward_share'] = share
+        except Exception:
+            pass
+        try:
+            response = self.http.get('https://clob.polymarket.com/rebates/current',params=dict(date=day.isoformat(),maker_address=self.wallet))
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows,list):
+                raise ValueError('incomplete rebate readback')
+            total = D('0')
+            for row in rows:
+                if row['condition_id'] != self.condition_id:
+                    continue
+                if (row['date'] != day.isoformat() or row['maker_address'].lower() != self.wallet.lower()
+                        or row['asset_address'].lower() not in assets):
+                    raise ValueError('rebate identity mismatch')
+                total += amount(row['rebated_fees_usdc'])
+            result['rebate_today'] = total
+        except Exception:
+            pass
+        self.journal.append('income',result)
+        return result
+
+    def close(self):
+        try:
+            self.client.close()
+        finally:
+            if self.http is not None:
+                self.http.close()
+            self.journal.close()
+
+
+def _order_ids(signed):
+    # Pinned SDK does not expose its signed-order hash; use its own EIP712 encoding.
+    from dataclasses import asdict
+    from eth_utils import keccak
+    from polymarket.environments import PRODUCTION
+    from polymarket._internal.actions.orders.types import UnsignedOrder
+    from polymarket._internal.actions.orders.typed_data import _app_domain_separator, _order_contents_hash
+    payload = asdict(signed)
+    payload.pop('signature')
+    payload.pop('post_only')
+    result = []
+    for address in (PRODUCTION.standard_exchange, PRODUCTION.neg_risk_exchange):
+        unsigned = UnsignedOrder(**payload, chain_id=PRODUCTION.chain_id, exchange_address=address)
+        result.append('0x' + keccak(b'\x19\x01' + bytes.fromhex(_app_domain_separator(unsigned, protocol_version="2")[2:]) + _order_contents_hash(unsigned)).hex())
+    return tuple(result)
+
+
+def _receipt_proves_merge(receipt, request, wallet):
+    from eth_abi import decode
+    from eth_utils import keccak
+    from polymarket.environments import PRODUCTION as env
+    cash, burned = 0, {int(t):0 for t in (request.yes_token_id,request.no_token_id)}
+    topic = lambda value: '0x'+value[2:].lower().zfill(64)
+    transfer = '0x'+keccak(text='Transfer(address,address,uint256)').hex()
+    single = '0x'+keccak(text='TransferSingle(address,address,address,uint256,uint256)').hex()
+    batch = '0x'+keccak(text='TransferBatch(address,address,address,uint256[],uint256[])').hex()
+    for log in receipt['logs']:
+        address, topics = log['address'].lower(), [t.lower() for t in log['topics']]
+        data = bytes.fromhex(log['data'][2:])
+        if (address == env.collateral_token.lower() and len(topics) == 3 and topics[0] == transfer
+                and topics[2] == topic(wallet) and topics[1] in (topic(env.collateral_adapter),topic(env.neg_risk_collateral_adapter))):
+            cash += decode(['uint256'],data)[0]
+        if (address in (env.conditional_tokens.lower(),env.position_manager.lower()) and len(topics) == 4
+                and topics[2] == topic(wallet) and topics[3] == topic('0x'+'0'*40)):
+            if topics[0] == single:
+                token,quantity = decode(['uint256','uint256'],data)
+                if token in burned:
+                    burned[token] += quantity
+            elif topics[0] == batch:
+                ids, amounts = decode(['uint256[]','uint256[]'],data)
+                if len(ids) != len(amounts):
+                    return False
+                for token,quantity in zip(ids,amounts):
+                    if token in burned:
+                        burned[token] += quantity
+    amount = int(request.quantity*1000000)
+    return cash == amount and all(q == amount for q in burned.values())

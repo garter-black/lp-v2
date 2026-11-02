@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal as D
 import httpx
+import pytest
 
 AT = datetime(2026, 11, 2, tzinfo=UTC)
 
@@ -31,7 +32,7 @@ def market_wire(cid=CID, **overrides):
                 tags=[dict(id='2', label='Politics', slug='politics')]), **overrides)
 
 
-def external_sdk(rows=None, book_mismatch=False):
+def external_sdk(rows=None, book_mismatch=False, book_prices=None):
     from polymarket import PublicClient
     from polymarket.clients._transport import SyncTransport
     seen=[]
@@ -44,7 +45,7 @@ def external_sdk(rows=None, book_mismatch=False):
                 return httpx.Response(200, json={'markets': [], 'next_cursor': None})
             return httpx.Response(200, json={'markets': rows if rows is not None else [market_wire(), market_wire(BAD, bestBid='0.92', bestAsk='0.94')], 'next_cursor':'page2'})
         if req.url.path == '/book':
-            token=req.url.params['token_id']; bid,ask=('0.46','0.48') if token=='101' else ('0.51','0.53')
+            token=req.url.params['token_id']; bid,ask=(book_prices[token] if book_prices is not None else ('0.46','0.48') if token=='101' else ('0.51','0.53'))
             return httpx.Response(200,json=dict(market=BAD if book_mismatch else CID,asset_id=token,timestamp='1793577600000',
                 bids=[dict(price=bid,size='100')],asks=[dict(price=ask,size='100')],min_order_size='1',tick_size='0.01',neg_risk=False,hash='fixture'))
         if req.url.path.startswith('/markets/'):
@@ -116,3 +117,64 @@ def test_wallet_read_uses_existing_l2_credentials_only(caplog):
     assert sdk.read_wallet(AT)==dict(available_usdc='UNKNOWN',as_of=None)
     assert 'synthetic' not in caplog.text
     sdk.close()
+
+
+@pytest.mark.parametrize('dropped',['liquidity','midpoint'])
+def test_fixed_market_recovery_keeps_opening_ineligible_plan(tmp_path,dropped):
+    from datetime import timedelta
+    from lp_v2.readonly_sdk import ReadOnlySDK
+    from lp_v2.live_runtime import LiveRunner
+    from lp_v2.live_sdk import LiveSDK
+    from lp_v2.journal import Journal
+    from lp_v2.cli import RunConfig
+    from lp_v2.ledger import Ledger
+    from lp_v2.engine import Engine
+    from lp_v2.models import Decision
+    from tests.fakes.live_exchange import Exchange
+    from tests.test_live_sdk import OWNER,WALLET,SIGNER,TOKENS
+    import pytest
+    wire=market_wire()
+    prices={'101':('0.46','0.48'),'102':('0.51','0.53')}
+    public,_=external_sdk(rows=[wire],book_prices=prices)
+    in_play=[False]
+    http=httpx.Client(transport=httpx.MockTransport(lambda req:httpx.Response(200,json=dict(
+        in_play=in_play[0],blocked=False,country='US'))))
+    observations=ReadOnlySDK(public=public,http=http)
+    ex=Exchange(condition_id=CID)
+    journal=Journal(tmp_path/'journal.sqlite')
+    live=LiveSDK(ex.sdk,journal,owner=OWNER,condition_id=CID,token_ids=TOKENS,wallet=WALLET,signer=SIGNER)
+    runner=LiveRunner(RunConfig(D('100'),AT),live,observations)
+    ex.reject_tokens.add('102')
+    try:
+        runner.step(AT)
+        assert len(ex.posts)==2
+        ex.fill('order-1','10','.46',at=AT+timedelta(seconds=1))
+        if dropped=='liquidity':
+            wire['liquidityNum']='500'
+        else:
+            wire.update(bestBid='.92',bestAsk='.94')
+            prices.update({'101':('.92','.94'),'102':('.05','.07')})
+        row=observations.read_fixed_market(AT+timedelta(seconds=10),CID)[0]
+        assert row['eligible'] is False and row['plan'] is not None
+        assert observations.read_markets(AT+timedelta(seconds=10))[0]['plan'] is None
+        assert Engine(Ledger(OWNER,D('100'))).decide((row['plan'],),now=AT+timedelta(seconds=10))==Decision()
+        ex.reject_tokens.clear()
+        runner.step(AT+timedelta(seconds=10))
+        hedges=[r for r in runner.ledger.snapshot().requests if r.purpose=='hedge']
+        assert len(hedges)==1 and hedges[0].quote.quantity==D('10')
+        assert hedges[0].quote.price==D('.51' if dropped=='liquidity' else '.05')
+        assert hedges[0].quote.price<=D('.52')
+        for changes in ({'feesEnabled':True},{'acceptingOrders':False},{'orderPriceMinTickSize':'.02'}):
+            original={k:wire[k] for k in changes}
+            wire.update(changes)
+            with pytest.raises(ValueError):
+                observations.read_fixed_market(AT+timedelta(seconds=10),CID)
+            wire.update(original)
+        in_play[0]=True
+        with pytest.raises(ValueError):
+            observations.read_fixed_market(AT+timedelta(seconds=10),CID)
+        in_play[0]=False
+        with pytest.raises(ValueError):
+            observations.read_fixed_market(AT+timedelta(seconds=70),CID)
+    finally:
+        live.close();observations.close()

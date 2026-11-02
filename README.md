@@ -34,7 +34,7 @@ Tests prohibit socket networking, including loopback. HTTP tests exercise the ac
 UTC timestamp and serves **127.0.0.1:8765**. Stop with Ctrl-C. The independent
 read-only runtime reads market data and proposes pairs every ten seconds;
 scores refresh every ten minutes and wallet reads every thirty seconds.
-There is no trading mode or live configuration mutation.
+Live execution is a separate explicit opt-in; configuration remains frozen during each run.
 
 - GET `/dashboard` (or `/`): standalone page, polling `/summary` every five seconds.
 - GET `/dashboard?demo=1`: explicit offline four-state demo.
@@ -44,11 +44,23 @@ There is no trading mode or live configuration mutation.
 - Non-GET returns 405; unknown paths return 404. No arbitrary file serving.
 
 Account configuration is explicit and optional; missing credentials leave wallet
-UNKNOWN. No private key, credential discovery, or order signing is supported.
+UNKNOWN. The default read-only path does not load a private key or sign orders. No credential discovery is supported.
 Read the [M3 runtime and deployment draft guide](docs/M3_READ_ONLY.md) for
 conservative market exclusions, authentication, freshness and future operator
 steps. Deployment artifacts are drafts; no live run or 24-hour acceptance is
 claimed. Browser visual QA remains separate from offline behavior verification.
+
+## M4 explicit live entry (draft)
+
+The separate `run --live --market <condition_id>` path connects the existing engine
+and ledger to the pinned SDK through an append-only SQLite journal. It includes
+owned-order drain/stop, restart reconciliation, receipt-gated Proxy merge, and
+actual UTC income in the existing dashboard. Read the [M4 operator guide](docs/M4_LIVE.md)
+for the explicit signing/L2/relayer file boundaries, Linux process requirements,
+accounting definitions, UNKNOWN behavior and remaining operational verification.
+The [live unit](deploy/lp-v2-live.service) and [launcher](deploy/run-live) are drafts;
+they provision nothing and do not replace the read-only deployment path.
+No deployment, live operation, key provisioning or field acceptance is claimed.
 
 Do not place trades or deploy until Ray explicitly authorizes each milestone.
 
