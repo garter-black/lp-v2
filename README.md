@@ -52,7 +52,7 @@ claimed. Browser visual QA remains separate from offline behavior verification.
 
 ## M4 explicit live entry (draft)
 
-The separate `run --live --market <condition_id>` path connects the existing engine
+The separate `run --live --market <condition_id>` path (repeat `--market` for up to three approved markets) connects the existing engine
 and ledger to the pinned SDK through an append-only SQLite journal. It includes
 owned-order drain/stop, restart reconciliation, receipt-gated Proxy merge, and
 actual UTC income in the existing dashboard. Read the [M4 operator guide](docs/M4_LIVE.md)
@@ -60,6 +60,9 @@ for the explicit signing/L2/relayer file boundaries, Linux process requirements,
 accounting definitions, UNKNOWN behavior and remaining operational verification.
 The [live unit](deploy/lp-v2-live.service) and [launcher](deploy/run-live) are drafts;
 they provision nothing and do not replace the read-only deployment path.
+The M5 extension freezes one to three markets in one executor, preserves M4 state and global limits,
+and records per-market occupation and income. The read-only `lp-v2 report --state-dir … --day YYYY-MM-DD --out …`
+command writes daily CSV/JSON with explicit UNKNOWN reasons and safety evidence; see the [M5 report guide](docs/M5_REPORT.md).
 No deployment, live operation, key provisioning or field acceptance is claimed.
 
 Do not place trades or deploy until Ray explicitly authorizes each milestone.

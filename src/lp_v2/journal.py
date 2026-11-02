@@ -54,12 +54,18 @@ def decode(payload):
 
 
 class Journal:
-    def __init__(self, path):
+    def __init__(self, path, *, readonly=False):
         self.path = path
+        if readonly:
+            from pathlib import Path
+            self.db = sqlite3.connect(Path(path).resolve(strict=True).as_uri()+'?mode=ro',uri=True)
+            self.db.execute('BEGIN')
+            return
         self.db = sqlite3.connect(path,check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS events_kind_seq ON events(kind,seq)')
         self.db.executescript('''
             CREATE TRIGGER IF NOT EXISTS no_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'append only'); END;
             CREATE TRIGGER IF NOT EXISTS no_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'append only'); END;
@@ -69,9 +75,13 @@ class Journal:
         with self.db:
             self.db.execute('INSERT INTO events(kind,payload) VALUES (?,?)', (kind, encode(payload)))
 
-    def events(self, kind=None):
-        rows = self.db.execute('SELECT kind,payload FROM events ORDER BY seq')
-        return tuple((k, decode(p)) for k, p in rows if kind is None or k == kind)
+    def day_lower_bound(self, kind, day):
+        row=self.db.execute("SELECT seq FROM events WHERE kind=? AND julianday(json_extract(payload,'$.at.datetime'))<julianday(?) ORDER BY seq DESC LIMIT 1",(kind,day.isoformat())).fetchone()
+        return row[0]+1 if row else 0
+
+    def events(self, kind=None, *, since_seq=0):
+        rows = self.db.execute('SELECT kind,payload FROM events WHERE seq>=?'+(' AND kind=?' if kind is not None else '')+' ORDER BY seq', (since_seq,) if kind is None else (since_seq,kind))
+        return tuple((k, decode(p)) for k,p in rows)
 
     def close(self):
         self.db.close()
