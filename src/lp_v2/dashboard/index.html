@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lp_v2 看板</title>
+<style>
+:root{--ink:#172b39;--muted:#596b78;--line:#dae3e8;--bg:#f4f7f8;--paper:#fff;--green:#12654c;--green-bg:#e8f4ed;--orange:#9a5c1d;--red:#ae343b;--red-bg:#fff1f1;--future:#f0f2f4;--blue:#245971}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;font-variant-numeric:tabular-nums}button{font:inherit}button:focus-visible,a:focus-visible,.table-wrap:focus-visible{outline:3px solid #397cad;outline-offset:3px}button{cursor:pointer;touch-action:manipulation}.page{max-width:1920px;margin:auto;padding:26px 30px 18px}.masthead{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:22px}.wordmark{display:flex;align-items:center;gap:14px}.mark{width:42px;height:42px;background:var(--ink);color:white;display:grid;place-items:center;font:600 17px ui-monospace,monospace;border-radius:10px}h1{font-size:26px;letter-spacing:-.6px;line-height:1.2;margin:0 0 5px}h2{font-size:17px;margin:0}p{margin:0}.subtitle,.muted{color:var(--muted)}.eyebrow{font-size:11px;font-weight:700;letter-spacing:1.4px;color:var(--muted);text-transform:uppercase}.standalone{text-align:right;font-size:12px;color:var(--muted)}.standalone strong{display:block;font-size:13px;color:var(--ink)}.switcher{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:16px}.switcher-label{font-size:13px}.switcher-label strong{margin-right:12px}.switch-buttons{display:flex;gap:6px;border:1px solid var(--line);border-radius:10px;background:#eaf0f3;padding:4px}.switch-buttons button{min-height:42px;padding:0 19px;border:1px solid transparent;border-radius:7px;color:var(--muted);background:transparent;transition:background .15s,color .15s}.switch-buttons button:hover{background:#fff}.switch-buttons button[aria-pressed=true]{background:var(--ink);color:white;box-shadow:0 2px 4px #172b3918}.card{background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 3px 15px #172b3903}.card-head{display:flex;justify-content:space-between;align-items:center;padding:17px 22px;border-bottom:1px solid var(--line);gap:12px}.run-title{display:flex;align-items:center;gap:12px}.badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 9px;border-radius:5px;white-space:nowrap}.good{background:var(--green-bg);color:var(--green)}.neutral{background:#eaf0f3;color:#4f6472}.warn{background:#fff4e5;color:var(--orange)}.bad{background:var(--red-bg);color:var(--red)}.dot{width:6px;height:6px;background:currentColor;border-radius:50%}.updated{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted)}.banner{padding:10px 22px;background:#edf5f7;border-bottom:1px solid var(--line);color:#315c6c;min-height:42px;font-size:13px}.banner.warn{background:#fff6e9;color:var(--orange)}.banner.bad{background:var(--red-bg);color:var(--red)}.stats{display:grid;grid-template-columns:1.15fr 1.15fr 1fr 1fr 1fr;padding:17px 22px 15px;gap:20px}.stat{border-right:1px solid var(--line)}.stat:last-child{border:0}.stat-label{color:var(--muted);font-size:12px;margin-bottom:4px}.stat-value{font-size:29px;font-weight:600;letter-spacing:-.6px;min-height:44px}.unit{font-size:12px;font-weight:500;letter-spacing:0;color:var(--muted);margin-left:6px}.stat-hint{font-size:12px;color:var(--muted)}.meta{display:flex;flex-wrap:wrap;gap:10px 28px;padding:0 22px 16px;font-size:12px;color:var(--muted)}.meta strong{font-weight:500;color:var(--ink);margin-left:7px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.unknown{color:#65717c;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.1px}.stat-value .unknown{font-size:23px;letter-spacing:0}.capital{border-top:1px solid var(--line);padding:15px 22px;background:#fcfdfd}.capital-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px}.section-num{font:11px ui-monospace,monospace;color:#758c9a;margin-right:8px}.capacity-grid{display:grid;grid-template-columns:1fr 1fr;gap:32px}.bar-label{display:flex;justify-content:space-between;gap:12px;font-size:12px;margin-bottom:7px}.bar-label strong{font-size:14px}.track{height:14px;background:#e8edf0;border-radius:4px;overflow:hidden}.actual-fill{height:100%;background:var(--green)}.proposed-track{background:#fff;border:1px dashed #7692a2;padding:2px;height:14px}.proposed-fill{height:100%;background:repeating-linear-gradient(135deg,#c5d7df 0,#c5d7df 4px,#edf3f5 4px,#edf3f5 8px)}.empty-track{background:#edf0f2;border:1px dashed #a0abb3}.capital-parts{display:flex;flex-wrap:wrap;gap:7px 18px;font-size:11px;color:var(--muted);margin-top:9px}.capital-parts b{font-weight:600;color:var(--ink);margin-left:5px}.capital-hint{display:flex;justify-content:space-between;margin-top:9px;font-size:11px;color:var(--muted)}.freshness{display:flex;flex-wrap:wrap;gap:9px 24px;align-items:center;padding:11px 22px;border-block:1px solid var(--line);font-size:12px;background:#f8fafb}.freshness strong{font-weight:500;color:var(--ink);margin-left:6px}.freshness .cadence{margin-left:auto;color:var(--muted);font-size:11px}.market-head{display:flex;justify-content:space-between;align-items:center;padding:15px 22px 12px}.market-head p{font-size:11px;color:var(--muted);margin-top:3px}.market-count{font-size:12px;color:var(--muted)}.table-wrap{overflow-x:auto;width:100%}table{border-collapse:collapse;width:100%;text-align:left}.markets{table-layout:fixed;min-width:1440px;font-size:12px}.markets th{font-weight:500;font-size:11px;line-height:1.65;padding:10px 9px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fafcfc;vertical-align:top}.markets th:first-child,.markets td:first-child{padding-left:22px}.markets td{padding:16px 9px;vertical-align:top;border-bottom:1px solid var(--line);line-height:1.6}.markets tr:last-child td{border-bottom:0}.markets th:nth-child(n+8),.markets td:nth-child(n+8){background:var(--future);color:#65717c}.markets th:nth-child(8),.markets td:nth-child(8){border-left:1px solid #d2dbe0}.col-no{display:block;font:10px ui-monospace,monospace;color:#83919b;margin-bottom:4px}.m4{display:block;font-size:10px;line-height:1.5;margin-top:5px;color:#687783}.market-title{font-size:13px;font-weight:600;line-height:1.65}.market-id{display:block;color:#7b8992;font:10px ui-monospace,monospace;margin-top:7px}.score{font-size:20px;font-weight:600;line-height:1.1}.reason{color:var(--orange);font-size:11px;line-height:1.6;margin-top:7px}.cell-sub{display:block;color:var(--muted);font-size:11px;margin-top:4px}.quote{white-space:nowrap;font-family:ui-monospace,monospace}.dash{color:#6f7d86}.stale-cell{background:#f1f3f4;color:#65717c}.stale-cell .cell-sub,.stale-cell .score{color:#65717c}.table-note{padding:11px 22px;background:#fbfcfd;border-top:1px solid var(--line);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:12px}.reference{margin-top:18px;display:grid;grid-template-columns:250px 1fr;gap:30px}.reference h2{margin-top:3px;font-size:16px}.reference p{font-size:12px;color:var(--muted);margin-top:6px}.reference-table{font-size:11px;line-height:1.55}.reference-table th{color:var(--muted);font-weight:500;padding:5px 10px;border-bottom:1px solid var(--line)}.reference-table td{padding:5px 10px;border-bottom:1px solid #e2e8ec}.reference-table td:first-child{width:31%;font-weight:500}.footer{display:flex;justify-content:space-between;gap:15px;font-size:11px;color:var(--muted);margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}.skip{position:absolute;top:-80px;left:20px;background:white;padding:8px}.skip:focus{top:8px;z-index:5}noscript{display:block;padding:20px;background:#fff1f1}
+@media(max-width:1100px){.page{padding:20px}.stats{gap:12px}.stat-value{font-size:25px}.capacity-grid{gap:20px}.reference{grid-template-columns:200px 1fr}.freshness .cadence{margin-left:0}}
+@media(max-width:680px){body{font-size:14px}.page{padding:16px 12px}.masthead{align-items:flex-start;margin-bottom:18px}h1{font-size:21px}.standalone{display:none}.switcher{align-items:flex-start;flex-direction:column}.switch-buttons{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:8px}.switch-buttons button{min-height:44px;padding:0 8px}.card-head{align-items:flex-start;flex-direction:column;padding:16px}.stats{grid-template-columns:1fr 1fr;padding:16px;gap:18px}.stat:nth-child(even){border:0}.stat-value{font-size:27px}.meta{padding:0 16px 16px;gap:9px 20px}.capital{padding:16px}.capacity-grid{grid-template-columns:1fr;gap:20px}.freshness{padding:12px 16px}.market-head{padding:16px}.reference{grid-template-columns:1fr;gap:8px}.reference-table td:first-child{width:35%}.footer,.table-note{flex-direction:column}.table-note{padding:12px 16px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+[hidden]{display:none!important}</style>
+</head>
+<body>
+<a class="skip" href="#dashboard">跳到看板</a>
+<main class="page">
+<header class="masthead"><div class="wordmark"><div class="mark" aria-hidden="true">lp</div><div><h1>lp_v2 看板</h1><p class="subtitle">独立观察页 · 东京只读试运行</p></div></div><div class="standalone"><strong id="source-label">实时只读 / 本地服务</strong><a href="?demo=1">离线演示四态</a></div></header>
+<section class="switcher" id="demo-controls" hidden aria-label="Mock 场景"><div class="switcher-label"><strong>场景预览</strong><span class="muted">切换以检查数据异常时的表现</span></div><div class="switch-buttons" role="group" aria-label="四态切换器"><button type="button" data-state="normal" aria-pressed="true">正常</button><button type="button" data-state="wallet" aria-pressed="false">钱包读不到</button><button type="button" data-state="unreachable" aria-pressed="false">接口不可达</button><button type="button" data-state="stale" aria-pressed="false">数据过期</button></div></section>
+<section class="card" id="dashboard" aria-label="lp_v2 只读看板"></section>
+<section class="reference" aria-labelledby="reference-heading"><div><div class="eyebrow">Data contract</div><h2 id="reference-heading">缺字段 → UNKNOWN</h2><p>已知为零，显示 0。<br>未知或读取失败，明确留白为 UNKNOWN。</p></div><table class="reference-table"><thead><tr><th scope="col">情况</th><th scope="col">卡片表现</th></tr></thead><tbody><tr><td>lp_v2 不可达（整个接口失败）</td><td>显示「lp_v2 不可达」；数据全部 UNKNOWN，保留表结构</td></tr><tr><td>钱包余额读不到</td><td>钱包可用 UNKNOWN；真实占用和拟挂预留照常显示</td></tr><tr><td>某市场估分缺失</td><td>该行估分 UNKNOWN，状态「不挂：估分缺失」</td></tr><tr><td>M3 阶段的 m4 字段</td><td>第 8–14 列全为 UNKNOWN，灰底标「M4 起」</td></tr><tr><td>接口版本较新</td><td>提示「接口版本较新，部分字段未显示」；已认识的字段照常显示</td></tr><tr><td>数据过期</td><td>红色提示，数值保留；决策停滞时拟挂列变灰，估分过期独立标记</td></tr></tbody></table></section>
+<footer class="footer"><span>今日 = 北京时间 08:00 起（UTC 00:00）；缺数据显示 UNKNOWN，不显示 0。</span><span>schema 1 · 只读观察</span></footer>
+</main>
+<noscript>请启用 JavaScript 查看只读快照；?demo=1 可离线预览。</noscript>
+<script type="application/json" id="summary-data">{
+  "schema_version": 1,
+  "version": "0.3.0",
+  "mode": "read_only",
+  "as_of": "2027-01-10T08:00:05+00:00",
+  "run": {
+    "code_sha": "abc1234",
+    "started_at": "2027-01-09T02:00:00+00:00",
+    "capital_usdc": "100",
+    "wallet_tail": "…a3F9",
+    "region_check": "ok"
+  },
+  "freshness": {
+    "decision_as_of": "2027-01-10T08:00:00+00:00",
+    "scores_as_of": "2027-01-10T07:50:00+00:00",
+    "wallet_as_of": "2027-01-10T07:59:40+00:00"
+  },
+  "wallet": {
+    "available_usdc": "182.40"
+  },
+  "capital": {
+    "inventory_cost": "0",
+    "open_buys": "0",
+    "pending_requests": "0",
+    "hedge_reserve": "0",
+    "fee_reserve": "0",
+    "total": "0",
+    "proposed_reserve": "100.00"
+  },
+  "safety": {
+    "orders_sent": 0,
+    "cancels_sent": 0,
+    "since": "2027-01-09T02:00:00+00:00"
+  },
+  "markets": [
+    {
+      "title": "新西兰央行 2027-03 会加息？",
+      "condition_id": "0xmock01",
+      "score": "41.7",
+      "eligible": true,
+      "skip_reason": null,
+      "proposed": {
+        "yes": {
+          "price": "0.46",
+          "quantity": "100"
+        },
+        "no": {
+          "price": "0.51",
+          "quantity": "100"
+        },
+        "pair_cost": "0.97",
+        "safety_margin": "0.03",
+        "reserved_usdc": "100"
+      },
+      "m4": {
+        "lp_yield_pct_per_day": "UNKNOWN",
+        "reward_today": "UNKNOWN",
+        "rebate_today": "UNKNOWN",
+        "reward_share": "UNKNOWN",
+        "paired_profit": "UNKNOWN",
+        "unpaired_inventory": "UNKNOWN",
+        "net_yield_pct_per_day": "UNKNOWN"
+      }
+    },
+    {
+      "title": "某政治市场（中间价过高）",
+      "condition_id": "0xmock02",
+      "score": "38.2",
+      "eligible": false,
+      "skip_reason": "中间价 0.93 超出 0.10–0.90",
+      "proposed": null,
+      "m4": {
+        "lp_yield_pct_per_day": "UNKNOWN",
+        "reward_today": "UNKNOWN",
+        "rebate_today": "UNKNOWN",
+        "reward_share": "UNKNOWN",
+        "paired_profit": "UNKNOWN",
+        "unpaired_inventory": "UNKNOWN",
+        "net_yield_pct_per_day": "UNKNOWN"
+      }
+    }
+  ]
+}</script>
+<script src="/dashboard.js"></script>
+</body>
+</html>

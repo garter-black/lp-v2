@@ -1,0 +1,26 @@
+# DRAFT; provision and enable only with explicit host/deployment approval.
+[Unit]
+Description=lp-v2 independent read-only observer (127.0.0.1:8765)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lp-v2
+Group=lp-v2
+WorkingDirectory=/opt/lp-v2/current
+EnvironmentFile=/etc/lp-v2/run.env
+ExecStart=/usr/bin/flock -n /opt/lp-v2/runtime.lock /opt/lp-v2/current/run-readonly
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lp-v2
+
+[Install]
+WantedBy=multi-user.target

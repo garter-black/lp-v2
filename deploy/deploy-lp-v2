@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# DRAFT. Run only after separate deployment approval on the intended host.
+set -euo pipefail
+sha=${1:-}
+[[ $# == 1 && $sha =~ ^[0-9a-f]{40}$ ]] || { echo 'usage: deploy-lp-v2 <exact-main-SHA>' >&2; exit 2; }
+repo=raymizzou/lp-v2
+root=${LP_V2_ROOT:-/opt/lp-v2}
+[[ $root == /* && ${root##*/} == lp-v2 && ! -L $root ]] || { echo 'invalid dedicated lp-v2 root' >&2; exit 2; }
+# This gate precedes installation, fetch, release creation, switching and restart.
+gh api "repos/$repo/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=$sha&per_page=100" |
+python3 -c '
+import json,sys
+sha=sys.argv[1]
+runs=json.load(sys.stdin).get("workflow_runs",[])
+runs=[r for r in runs if r.get("head_sha")==sha and r.get("head_branch")=="main" and r.get("event")=="push" and r.get("path")==".github/workflows/ci.yml" and r.get("repository",{}).get("full_name")=="raymizzou/lp-v2"]
+r=max(runs,key=lambda r:(r.get("id",0),r.get("run_attempt",0)),default={})
+if r.get("status")!="completed" or r.get("conclusion")!="success":
+ sys.exit("Refused: missing/failed trusted exact-SHA main CI")
+' "$sha"
+: "${LP_V2_CAPITAL_USDC:?set approved startup capital}"
+: "${LP_V2_WALLET_TAIL:?set approved wallet last four characters}"
+python3 -c 'from decimal import Decimal;import sys;c=Decimal(sys.argv[1]);assert c.is_finite() and c>0;assert len(sys.argv[2])==4' "$LP_V2_CAPITAL_USDC" "$LP_V2_WALLET_TAIL"
+origin=$(git -C "$root/repo" config --get remote.origin.url)
+[[ $origin == https://github.com/raymizzou/lp-v2.git || $origin == git@github.com:raymizzou/lp-v2.git ]] || { echo 'wrong source repository' >&2; exit 1; }
+start=$SECONDS
+mkdir "$root/deploy.lock" || { echo 'another lp-v2 deployment owns the lock' >&2; exit 1; }
+previous=$(readlink "$root/current" || true)
+switched=0
+cleanup() {
+ rc=$?
+ rm -f "$root/current.next"
+ rmdir "$root/deploy.lock"
+ if ((rc != 0)); then
+  echo "Deployment FAILED (exit $rc); elapsed $((SECONDS-start))s. No success claimed." >&2
+  if ((switched)); then
+   echo "rollback: verify previous trusted release '$previous', stop lp-v2.service, atomically restore current symlink, restart lp-v2.service; verify previous SHA/capital/wallet/region." >&2
+  fi
+ fi
+}
+trap cleanup EXIT
+[[ ! -e "$root/current" || -L "$root/current" ]] || { echo 'current must be a symlink' >&2; exit 1; }
+git -C "$root/repo" fetch origin main
+git -C "$root/repo" merge-base --is-ancestor "$sha" refs/remotes/origin/main
+[[ $(git -C "$root/repo" rev-parse "$sha^{commit}") == "$sha" ]] || exit 1
+release="$root/releases/$sha"
+mkdir -p "$root/releases"
+if [[ ! -d $release ]]; then
+ mkdir "$release"
+ # A partial release is unusable; operator removes it after diagnosing failure.
+ git -C "$root/repo" archive --format=tar "$sha" | tar -xf - -C "$release"
+ python3 -m venv "$release/.venv"
+ "$release/.venv/bin/python" -m pip install "$release"
+ cat > "$release/run-readonly" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$release/.venv/bin/lp-v2" run --capital-usdc "\${LP_V2_CAPITAL_USDC:?}" --code-sha "$sha" --credentials-file /etc/lp-v2/credentials.json
+EOF
+ chmod 0755 "$release/run-readonly"
+ printf '%s\n' "$sha" > "$release/COMPLETE"
+fi
+[[ $(cat "$release/COMPLETE") == "$sha" ]] || { echo 'partial release; inspect before retry' >&2; exit 1; }
+printf '%s\n' "$previous" > "$root/previous-release"
+ln -s "$release" "$root/current.next"
+python3 -c 'import os,sys;os.replace(sys.argv[1],sys.argv[2])' "$root/current.next" "$root/current"
+switched=1
+systemctl restart lp-v2.service
+healthy=0
+for attempt in 1 2 3 4 5 6; do
+ if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8765/healthz |
+ python3 -c '
+import json,sys
+from decimal import Decimal
+h=json.load(sys.stdin)
+assert h.get("status")=="ok" and h.get("code_sha")==sys.argv[1]
+assert Decimal(h["capital_usdc"])==Decimal(sys.argv[2])
+assert h.get("wallet_tail")==sys.argv[3] and h.get("region_check")=="ok"
+' "$sha" "$LP_V2_CAPITAL_USDC" "$LP_V2_WALLET_TAIL"; then healthy=1; break; fi
+ # Wait only for readiness; failed identity stays a failure after bounded retries.
+ sleep 1
+done
+((healthy)) || { echo 'health identity failed; rollback required' >&2; exit 1; }
+printf 'Healthy exact requested release; elapsed %ss. Previous release: %s\n' "$((SECONDS-start))" "$previous"
