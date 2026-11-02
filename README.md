@@ -10,7 +10,7 @@ Original cloud-local roadmap reference: `~/ray-docs/任务流/PM-LP-V2-ROADMAP-t
 
 Four pure computations handle [scoring](src/lp_v2/scoring.py), [dual BUY quotes](src/lp_v2/quoting.py), [cost-based hedges](src/lp_v2/hedge.py) and [capital accounting](src/lp_v2/capital.py). They consume explicit data rather than contacting an exchange. The [ledger](src/lp_v2/ledger.py) tracks owned facts, uncertainty and recovery provenance. One [engine](src/lp_v2/engine.py) round returns immutable place/cancel/merge intents; it does not execute them.
 
-[SDKPort](src/lp_v2/sdk_port.py) defines the boundary, and tests use a scripted fake. No real SDK adapter, signing or trading loop is wired. Startup exposes only a read-only local status service with an empty ledger.
+[SDKPort](src/lp_v2/sdk_port.py) preserves the M2 execution contract for fakes. M3 adds a separate [read-only adapter](src/lp_v2/readonly_sdk.py) and [runner](src/lp_v2/readonly_runtime.py). The runner uses Engine.decide only for simulation and never submits its intents.
 
 ## Install and test
 
@@ -30,13 +30,25 @@ Tests prohibit socket networking, including loopback. HTTP tests exercise the ac
 .venv/bin/lp-v2 run --capital-usdc 100
 ```
 
-`--capital-usdc` is required and must be finite and positive. Startup freezes that value and its UTC timestamp, initializes an empty ledger, and blocks while serving at fixed **127.0.0.1:8765**. Stop with Ctrl-C. No configuration file is reloaded and no exchange state is fetched.
+`--capital-usdc` is required, finite and positive. Startup freezes the cap and
+UTC timestamp and serves **127.0.0.1:8765**. Stop with Ctrl-C. The independent
+read-only runtime reads market data and proposes pairs every ten seconds;
+scores refresh every ten minutes and wallet reads every thirty seconds.
+There is no trading mode or live configuration mutation.
 
-- GET `http://127.0.0.1:8765/healthz`: versioned health JSON.
-- GET `http://127.0.0.1:8765/summary`: frozen startup capital/time and current capital components as exact Decimal strings.
-- Other valid methods return 405; unknown GET targets return 404. There are no mutation routes or external-bind option.
+- GET `/dashboard` (or `/`): standalone page, polling `/summary` every five seconds.
+- GET `/dashboard?demo=1`: explicit offline four-state demo.
+- GET `/summary`: immediate schema 1 in-memory snapshot, exact money strings,
+  real occupation separated from simulated proposal reserves, UNKNOWN for missing facts.
+- GET `/healthz`: code SHA, frozen capital, wallet tail and region identity.
+- Non-GET returns 405; unknown paths return 404. No arbitrary file serving.
 
-The loopback listener is the intentional production networking boundary; it was not started over real TCP during automated verification. Live exchange/network/trading validation is not claimed. CI timing success does not imply mandatory merge enforcement: `main` is unprotected, and external cloud Claude review remains pending. See the report for the exact evidence and scope.
+Account configuration is explicit and optional; missing credentials leave wallet
+UNKNOWN. No private key, credential discovery, or order signing is supported.
+Read the [M3 runtime and deployment draft guide](docs/M3_READ_ONLY.md) for
+conservative market exclusions, authentication, freshness and future operator
+steps. Deployment artifacts are drafts; no live run or 24-hour acceptance is
+claimed. Browser visual QA remains separate from offline behavior verification.
 
 Do not place trades or deploy until Ray explicitly authorizes each milestone.
 

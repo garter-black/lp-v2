@@ -1,0 +1,213 @@
+"""Read-only exchange boundary. No signing client or order execution capability."""
+from typing import Protocol
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class L2Credentials:
+    key: str
+    secret: str
+    passphrase: str
+    signer_address: str
+    wallet_address: str
+    signature_type: int
+
+    def __repr__(self):
+        return "L2Credentials(<redacted>)"
+
+
+UNKNOWN = 'UNKNOWN'
+
+
+class _Excluded(ValueError):
+    """Only application-authored, identity-free reasons may reach the summary."""
+
+
+
+class ReadOnlyPort(Protocol):
+    def read_markets(self, now): ...
+    def read_wallet(self, now): ...
+    def read_region(self): ...
+    def safety(self, since): ...
+    def close(self): ...
+
+
+class ReadOnlySDK:
+    def __init__(self, *, public=None, http=None, credentials=None, stop=None):
+        from polymarket import PublicClient
+        import httpx
+        self.__public = public if public is not None else PublicClient()
+        self.__http = http if http is not None else httpx.Client(timeout=5, follow_redirects=False, trust_env=False)
+        self.__credentials = credentials
+        self.__stop = stop
+
+    def read_wallet(self, now):
+        from decimal import Decimal
+        from polymarket.models.clob.account import BalanceAllowance
+        try:
+            data = self.__account_get('/balance-allowance', now,
+                dict(asset_type='COLLATERAL', signature_type=str(self.__credentials.signature_type)))
+            balance = BalanceAllowance.model_validate(data).balance
+            if balance < 0:
+                raise ValueError('balance')
+            return dict(available_usdc=str(Decimal(balance) / Decimal('1000000')), as_of=now)
+        except Exception:
+            return dict(available_usdc=UNKNOWN, as_of=None)
+
+    def safety(self, since):
+        return dict(orders_sent=0, cancels_sent=0, since=since)
+
+    def close(self):
+        self.__public.close()
+        self.__http.close()
+
+    def read_markets(self, now):
+        """Bounded political catalog scan; retain every discovered exclusion."""
+        from itertools import islice
+        rows = []
+        for page in islice(self.__public.list_markets(closed=False, tag_id=2, include_tag=True, page_size=20), 5):
+            if self.__stop is not None and self.__stop.is_set():
+                raise InterruptedError('stopping')
+            for market in page.items:
+                if self.__stop is not None and self.__stop.is_set():
+                    raise InterruptedError('stopping')
+                row = dict(title=market.question or UNKNOWN, condition_id=str(market.condition_id or UNKNOWN),
+                           score=UNKNOWN, eligible=False, skip_reason='市场安全数据缺失或无效', plan=None)
+                try:
+                    from lp_v2.scoring import score_market
+                    metadata = self.__metadata_market(market, now)
+                    row['score'] = str(score_market(metadata).score)
+                    row.update(self.__map_market(market, now, metadata))
+                except _Excluded as error:
+                    row['skip_reason'] = str(error)
+                except Exception:
+                    # Never propagate raw transport exceptions/account identity to logs.
+                    pass
+                rows.append(row)
+        return rows
+
+    @staticmethod
+    def __metadata_market(raw, now):
+        """Score facts are independent of whether a proposal can safely exist."""
+        from decimal import Decimal as D
+        from lp_v2.models import Market, Token
+        import re
+        cid = str(raw.condition_id)
+        if not re.fullmatch('0x[0-9a-fA-F]{64}', cid):
+            raise _Excluded('市场身份缺失或无效')
+        tokens = (raw.outcomes.yes.token_id, raw.outcomes.no.token_id)
+        if not all(tokens) or tokens[0] == tokens[1]:
+            raise _Excluded('二元市场 token 身份缺失或无效')
+        def number(value, positive=False):
+            v = D(str(value))
+            if not v.is_finite() or v < 0 or (positive and v == 0):
+                raise ValueError('number')
+            return v
+        t, rw = raw.trading, raw.rewards
+        # No verified fee model => UNKNOWN score, never optimistic zero fees.
+        if t.fees_enabled is not False:
+            raise _Excluded('费用输入未验证')
+        rates = [number(r.rewards_daily_rate) for r in (rw.clob_rewards or ())
+                 if str(r.condition_id) == cid and r.asset_address.lower() == '0x2791bca1f2de4661ed88a30c99a7a9449aa84174'
+                 and r.start_date <= now.date() and (r.end_date is None or r.end_date >= now.date())]
+        if not rates:
+            raise _Excluded('缺少有效奖励输入')
+        bid, ask = number(raw.prices.best_bid, True), number(raw.prices.best_ask, True)
+        if not 0 < bid <= ask < 1:
+            raise _Excluded('市场价格缺失或无效')
+        return Market(cid, (Token(str(tokens[0]), 'Yes'), Token(str(tokens[1]), 'No')),
+            number(t.minimum_tick_size, True), number(t.minimum_order_size, True), number(rw.rewards_min_size, True),
+            float(bid), float(ask), float(number(raw.metrics.liquidity_num)), float(number(raw.metrics.volume_24hr)),
+            float(sum(rates)), float(number(rw.rewards_max_spread, True)), 0.0, 0, False, True,
+            any(tag.slug == 'politics' for tag in raw.tags), None, raw.state.accepting_orders)
+
+    def __map_market(self, raw, now, m):
+        from dataclasses import replace
+        from decimal import Decimal as D
+        from lp_v2.models import Book, MarketPlan
+        from lp_v2.scoring import eligible_market, score_market
+        cid, st = m.condition_id, raw.state
+        if not (st.active is True and st.closed is False and st.accepting_orders is True
+                and st.enable_order_book is True and m.political is True):
+            raise _Excluded('市场状态或政治分类缺失或不合格')
+        midpoint = (D(str(m.best_bid)) + D(str(m.best_ask))) / 2
+        if not D('0.10') <= midpoint <= D('0.90'):
+            raise _Excluded(f'中间价 {midpoint} 超出 0.10–0.90')
+        if m.liquidity_num < 1000:
+            raise _Excluded('流动性低于 1000')
+        # Typed Gamma omits in_play; absence is never interpreted as false.
+        response = self.__http.get('https://clob.polymarket.com/markets/' + cid)
+        response.raise_for_status()
+        if response.json().get('in_play') is not False:
+            raise _Excluded('进行中状态未验证')
+        books = []
+        for token in m.tokens:
+            if self.__stop is not None and self.__stop.is_set():
+                raise InterruptedError('stopping')
+            b = self.__public.get_order_book(token_id=token.token_id)
+            if (str(b.condition_id) != cid or str(b.token_id) != token.token_id
+                    or b.tick_size != m.tick_size or b.min_order_size != m.min_order_size or not b.bids or not b.asks
+                    or b.timestamp is None or not 0 <= (now-b.timestamp).total_seconds() <= 60):
+                raise _Excluded('订单簿身份、约束或时效未验证')
+            bid = max(level.price for level in b.bids)
+            ask = min(level.price for level in b.asks)
+            if not bid.is_finite() or not ask.is_finite() or not 0 < bid < ask < 1:
+                raise _Excluded('订单簿价格无效')
+            books.append(Book(cid, token.token_id, bid, ask, b.timestamp))
+        m = replace(m, best_bid=float(books[0].best_bid), best_ask=float(books[0].best_ask), in_play=False)
+        eligible = eligible_market(m)
+        midpoint = (books[0].best_bid + books[0].best_ask) / 2
+        return dict(score=str(score_market(m).score), eligible=eligible,
+                    skip_reason=None if eligible else f'中间价 {midpoint} 或流动性不符合条件',
+                    plan=MarketPlan(m, tuple(books), max(m.min_order_size, m.rewards_min_size), (D('0'), D('0'))) if eligible else None)
+
+    def __account_get(self, path, now, params):
+        import base64, hashlib, hmac, re
+        c = self.__credentials
+        if (path not in ('/balance-allowance', '/data/orders') or c is None
+                or not all(isinstance(v, str) and v for v in (c.key, c.secret, c.passphrase))
+                or not all(re.fullmatch('0x[0-9a-fA-F]{40}', v) for v in (c.signer_address, c.wallet_address))
+                or type(c.signature_type) is not int or c.signature_type not in (0, 1, 2)):
+            raise ValueError('account read unavailable')
+        timestamp = str(int(now.timestamp()))
+        secret = base64.b64decode(c.secret + '=' * (-len(c.secret) % 4), altchars=b'-_', validate=True)
+        if not secret:
+            raise ValueError('account read unavailable')
+        signature = base64.urlsafe_b64encode(hmac.new(secret, (timestamp+'GET'+path).encode(), hashlib.sha256).digest()).decode()
+        response = self.__http.get('https://clob.polymarket.com' + path, params=params,
+            headers=dict(POLY_ADDRESS=c.signer_address, POLY_API_KEY=c.key,
+                         POLY_PASSPHRASE=c.passphrase, POLY_TIMESTAMP=timestamp, POLY_SIGNATURE=signature))
+        response.raise_for_status()
+        return response.json()
+
+    def read_orders(self, now):
+        # Readback is observational: old wallet orders never enter our ledger.
+        try:
+            count, cursor, seen = 0, None, set()
+            for _ in range(5):
+                data = self.__account_get('/data/orders', now, {} if cursor is None else dict(next_cursor=cursor))
+                if not isinstance(data['data'], list):
+                    raise ValueError('orders')
+                count += len(data['data'])
+                cursor = data.get('next_cursor')
+                if cursor in (None, 'LTE='):
+                    return dict(legacy_order_count=count, as_of=now)
+                if not isinstance(cursor, str) or cursor in seen:
+                    break
+                seen.add(cursor)
+        except Exception:
+            pass
+        return dict(legacy_order_count=UNKNOWN, as_of=None)
+
+    def read_region(self):
+        try:
+            r = self.__http.get('https://polymarket.com/api/geoblock')
+            r.raise_for_status()
+            blocked = r.json().get('blocked')
+            return 'ok' if blocked is False else 'blocked' if blocked is True else UNKNOWN
+        except Exception:
+            return UNKNOWN
+
+    def wallet_tail(self):
+        c = self.__credentials
+        return c.wallet_address[-4:] if c is not None else UNKNOWN

@@ -38,6 +38,12 @@ def request(handler, method="GET", path="/summary", payload=b""):
     return int(status.split()[1]), headers, decoded
 
 
+
+def original_fields(payload):
+    return {key: ({k: v for k, v in payload[key].items() if k != 'proposed_reserve'}
+                  if key == 'capital' else payload[key])
+            for key in ('version', 'capital_usdc', 'started_at', 'capital')}
+
 def test_get_status_json():
     from lp_v2.status_server import make_handler
 
@@ -47,10 +53,10 @@ def test_get_status_json():
     before = ledger.snapshot()
     status, headers, body = request(handler, path="/healthz")
     assert status == 200 and headers.get_content_type() == "application/json"
-    assert body == {"version": "0.1.0", "status": "ok"}
+    assert body == {"version": "0.1.0", "status": "ok", "code_sha":"UNKNOWN", "capital_usdc":"100", "wallet_tail":"UNKNOWN", "region_check":"UNKNOWN"}
     status, headers, body = request(handler)
     assert status == 200 and headers.get_content_type() == "application/json"
-    assert body == {
+    assert original_fields(body) == {
         "version": "0.1.0", "capital_usdc": "100", "started_at": "2026-11-02T00:00:00+00:00",
         "capital": {"inventory_cost": "0", "open_buys": "0", "pending_requests": "9.50",
                     "hedge_reserve": "0.30", "fee_reserve": "0.20", "total": "10.00"},
@@ -66,7 +72,7 @@ def test_get_status_json():
     before = ledger.snapshot()
     status, headers, current = request(handler)
     assert status == 200 and headers.get_content_type() == "application/json"
-    assert current == {
+    assert original_fields(current) == {
         "version": "0.1.0", "capital_usdc": "100", "started_at": "2026-11-02T00:00:00+00:00",
         "capital": {"inventory_cost": "1.64", "open_buys": "7.90", "pending_requests": "0",
                     "hedge_reserve": "0.30", "fee_reserve": "0.16", "total": "10.00"},
@@ -122,7 +128,7 @@ def test_loopback_binding(monkeypatch, interrupt):
             events.append(("bind", address))
             status, _, body = request(handler)
             assert status == 200
-            assert body == {
+            assert original_fields(body) == {
                 "version": "0.1.0", "capital_usdc": "100", "started_at": "2026-11-02T00:00:00+00:00",
                 "capital": {"inventory_cost": "0", "open_buys": "0", "pending_requests": "0",
                             "hedge_reserve": "0", "fee_reserve": "0", "total": "0"},
@@ -139,6 +145,8 @@ def test_loopback_binding(monkeypatch, interrupt):
         def __exit__(self, *exception):
             events.append("close")
 
+    from tests.test_readonly_runtime import ScriptedReads
+    monkeypatch.setattr(status_server, "create_readonly_sdk", lambda config, **kwargs: ScriptedReads())
     monkeypatch.setattr(status_server, "HTTPServer", ServerBoundary)
     assert serve(config) is None
     assert events == [("bind", ("127.0.0.1", 8765)), "serve", "close"]
@@ -164,3 +172,103 @@ def test_startup_config_is_immutable(tmp_path):
     assert request(handler, path="/config?capital_usdc=200")[0] == 404
     status, _, after = request(handler)
     assert status == 200 and after == before
+
+
+def test_build_summary_schema_one():
+    from copy import deepcopy
+    from lp_v2.status_server import build_summary
+    config = RunConfig(Decimal('100'), AT)
+    ledger, _ = prepared_ledger()
+    rows = [dict(title='央行', condition_id='m', score='41.7', eligible=True,
+                 proposed=dict(yes=dict(price='0.46', quantity='10'), no=dict(price='0.51', quantity='10'),
+                               pair_cost='0.97', safety_margin='0.03', reserved_usdc='10')),
+            dict(title='排除', condition_id='bad', score='38.2', eligible=False, skip_reason='中间价过高')]
+    original = deepcopy(rows); before = ledger.snapshot()
+    d = build_summary(config, before.capital, as_of=AT, markets=rows,
+                      run=dict(code_sha='abc1234', wallet_tail='a3F9', region_check='ok'),
+                      freshness=dict(decision_as_of=AT, scores_as_of=AT, wallet_as_of=AT),
+                      wallet=dict(available_usdc=Decimal('182.40')),
+                      safety=dict(orders_sent=0, cancels_sent=0, since=AT))
+    assert (d['schema_version'], d['mode'], d['version']) == (1, 'read_only', '0.1.0')
+    assert d['capital_usdc'] == d['run']['capital_usdc'] == '100'
+    assert d['started_at'] == d['run']['started_at'] == '2026-11-02T00:00:00+00:00'
+    assert d['as_of'] == d['freshness']['wallet_as_of'] == d['safety']['since'] == d['started_at']
+    assert d['run']['code_sha'] == 'abc1234' and d['run']['wallet_tail'] == 'a3F9'
+    assert d['wallet']['available_usdc'] == '182.40'
+    assert d['capital'] == dict(inventory_cost='0', open_buys='0', pending_requests='9.50', hedge_reserve='0.30', fee_reserve='0.20', total='10.00', proposed_reserve='10')
+    assert d['markets'][0]['proposed'] == rows[0]['proposed']
+    assert d['markets'][1]['proposed'] is None
+    assert set(d['markets'][0]['m4']) == {'lp_yield_pct_per_day', 'reward_today', 'rebate_today', 'reward_share', 'paired_profit', 'unpaired_inventory', 'net_yield_pct_per_day'}
+    assert set(d['markets'][0]['m4'].values()) == {'UNKNOWN'}
+    assert rows == original and ledger.snapshot() == before
+
+
+def test_build_summary_unknown_is_not_zero():
+    from lp_v2.status_server import build_summary
+    ledger, _ = prepared_ledger()
+    proposal = dict(yes=dict(price='0.46', quantity='10'), no=dict(price='0.51', quantity='10'), pair_cost='0.97', safety_margin='0.03', reserved_usdc='10')
+    d = build_summary(RunConfig(Decimal('100'), AT), ledger.snapshot().capital,
+                      markets=[dict(title='missing', eligible=True, proposed=proposal)])
+    assert d['as_of'] == d['wallet']['available_usdc'] == 'UNKNOWN'
+    assert set(d['freshness'].values()) == {'UNKNOWN'}
+    assert set(d['safety'].values()) == {'UNKNOWN'}
+    assert d['run']['code_sha'] == d['run']['wallet_tail'] == d['run']['region_check'] == 'UNKNOWN'
+    assert d['capital']['inventory_cost'] == '0'
+    assert d['markets'][0]['score'] == 'UNKNOWN'
+    assert d['markets'][0]['proposed'] is None
+    assert d['markets'][0]['eligible'] is False
+    assert d['markets'][0]['skip_reason'] == '估分缺失'
+    assert d['capital']['proposed_reserve'] == '0'
+
+
+def test_runtime_snapshot_served_without_network():
+    from lp_v2.readonly_runtime import ReadOnlyRunner
+    from lp_v2.status_server import make_handler
+    from tests.test_readonly_runtime import ScriptedReads
+    from datetime import timedelta
+    sdk=ScriptedReads(); runner=ReadOnlyRunner(RunConfig(Decimal('100'),AT),sdk,code_sha='abc1234')
+    runner.step(AT); calls=list(sdk.calls)
+    handler=make_handler(runner.config,runner)
+    d=request(handler)[2]
+    assert d==runner.snapshot() and d['markets'][0]['proposed']['yes']['price']=='0.46'
+    assert request(handler,path='/healthz')[2]==dict(version='0.1.0',status='ok',code_sha='abc1234',capital_usdc='100',wallet_tail='a3F9',region_check='ok')
+    for _ in range(3): request(handler)
+    assert sdk.calls==calls
+    runner.step(AT+timedelta(seconds=10))
+    assert request(handler)[2]['freshness']['decision_as_of']=='2026-11-02T00:00:10+00:00'
+
+
+def test_health_identity_available_during_catalog_read():
+    from threading import Event,Thread,Timer
+    from time import monotonic
+    from lp_v2.readonly_runtime import ReadOnlyRunner
+    from lp_v2.status_server import make_handler
+    from tests.test_readonly_runtime import ScriptedReads
+    entered,release=Event(),Event()
+    errors=[]
+    class BlockingReads(ScriptedReads):
+        def read_markets(self,now):
+            entered.set()
+            if not release.wait(3): raise AssertionError('catalog watchdog expired')
+            return super().read_markets(now)
+    runner=ReadOnlyRunner(RunConfig(Decimal('100'),AT),BlockingReads(),code_sha='abc1234')
+    handler=make_handler(runner.config,runner)
+    assert request(handler,path='/healthz')[2]['code_sha']=='abc1234'
+    def stepping():
+        try: runner.step(AT)
+        except BaseException as error: errors.append(error)
+    thread=Thread(target=stepping);thread.start()
+    watchdog=Timer(2,release.set);watchdog.start()
+    try:
+        assert entered.wait(1),'read_markets not reached'
+        start=monotonic();health=request(handler,path='/healthz')[2]
+        assert monotonic()-start<0.5,'health waited for blocked catalog'
+        assert health==dict(version='0.1.0',status='ok',code_sha='abc1234',capital_usdc='100',wallet_tail='a3F9',region_check='ok')
+        d=request(handler)[2]
+        assert d['freshness']['decision_as_of']==d['freshness']['scores_as_of']=='UNKNOWN'
+        assert d['wallet']['available_usdc']=='182.4'
+        assert d['markets']==[]
+    finally:
+        release.set();watchdog.cancel();watchdog.join();thread.join(2)
+    assert not thread.is_alive() and not errors
+    assert request(handler)[2]['freshness']['decision_as_of']==AT.isoformat()

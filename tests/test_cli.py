@@ -75,7 +75,8 @@ def test_validation_precedes_server(value, monkeypatch, capsys):
 
 def test_run_starts_read_only_server(monkeypatch, capsys):
     from lp_v2 import cli, status_server
-    from tests.test_status_server import request
+    from tests.test_status_server import request, original_fields
+    from tests.test_readonly_runtime import ScriptedReads
 
     configs, replies, events = [], [], []
 
@@ -99,6 +100,7 @@ def test_run_starts_read_only_server(monkeypatch, capsys):
         configs.append(config)
         status_server.serve(config)
 
+    monkeypatch.setattr(status_server, "create_readonly_sdk", lambda config, **kwargs: ScriptedReads())
     monkeypatch.setattr(status_server, "HTTPServer", ServerBoundary)
     monkeypatch.setattr(cli, "serve", serving_boundary, raising=False)
     before = datetime.now(UTC)
@@ -115,7 +117,7 @@ def test_run_starts_read_only_server(monkeypatch, capsys):
     assert len(replies) == 1
     status, headers, body = replies[0]
     assert status == 200 and headers.get_content_type() == "application/json"
-    assert body == {
+    assert original_fields(body) == {
         "version": "0.1.0", "capital_usdc": "100", "started_at": config.started_at.isoformat(),
         "capital": {"inventory_cost": "0", "open_buys": "0", "pending_requests": "0",
                     "hedge_reserve": "0", "fee_reserve": "0", "total": "0"},
