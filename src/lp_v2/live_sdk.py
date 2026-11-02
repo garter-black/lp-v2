@@ -4,36 +4,50 @@ from dataclasses import replace
 from contextlib import contextmanager
 from decimal import Decimal as D
 from polymarket.models.clob.order_response import AcceptedOrder, RejectedOrder
+from polymarket.errors import RequestRejectedError
+
 from lp_v2.models import Balance, Fill, Position, MergeResult, Order, OrderResult, OrderStatus, Outcome
 
 
+_UNAVAILABLE = object()
+
+
 class LiveSDK:
-    def __init__(self, client, journal, *, owner, condition_id, token_ids, wallet, signer):
+    def __init__(self, client, journal, *, owner, condition_id, token_ids, wallet, signer, clock=lambda: datetime.now(UTC)):
         self.client, self.journal = client, journal
         self.owner, self.condition_id, self.token_ids = owner, condition_id, tuple(token_ids)
         self.wallet, self.signer = wallet, signer
         self.rpc = self.relayer = self.http = None
         self._order_reads = None
+        self.clock = clock
+        self._cycle_at = None
 
     @contextmanager
-    def read_cycle(self):
+    def read_cycle(self, *, now=None):
         """Reuse order reads inside one executor round; never across rounds."""
         if self._order_reads is not None:
             yield
             return
         self._order_reads = {}
+        self._cycle_at = now
         try:
             yield
         finally:
             self._order_reads = None
+            self._cycle_at = None
+
+    def _now(self):
+        return self._cycle_at if self._cycle_at is not None else self.clock()
 
     def _order_readback(self, order_id):
         cache = self._order_reads if self._order_reads is not None else {}
         if order_id not in cache:
             try:
                 cache[order_id] = self.client.get_order(order_id=order_id)
+            except RequestRejectedError as error:
+                cache[order_id] = None if error.status == 404 else _UNAVAILABLE
             except Exception:
-                cache[order_id] = None
+                cache[order_id] = _UNAVAILABLE
         return cache[order_id]
 
     def _validate(self, request, at):
@@ -105,51 +119,93 @@ class LiveSDK:
             results[result.request.request_id] = result
         return results
 
+    def _observed_order(self, raw, oid, previous, cancels):
+        r, q = previous.request, previous.request.quote
+        if (raw.id != oid or raw.maker_address.lower() != self.wallet.lower()
+                or raw.condition_id != self.condition_id or raw.token_id != q.token_id
+                or raw.side != 'BUY' or raw.price != q.price or raw.original_size != q.quantity
+                or raw.order_type != 'GTD' or raw.expires_at != datetime.fromtimestamp(int(r.expires_at.timestamp()), UTC)):
+            raise ValueError('owned order readback identity mismatch')
+        uncertain = raw.status in ('DELAYED','UNMATCHED')
+        status = {'LIVE': OrderStatus.LIVE, 'DELAYED': OrderStatus.LIVE, 'UNMATCHED': OrderStatus.LIVE,
+                  'MATCHED': OrderStatus.FILLED, 'CANCELED': OrderStatus.CANCELLED,
+                  'CANCELLED': OrderStatus.CANCELLED}.get(raw.status)
+        if status is None or not D('0') <= raw.size_matched <= q.quantity:
+            raise ValueError('unknown order status or quantity')
+        prior = previous.order.filled_quantity if previous.order else D('0')
+        if status != OrderStatus.LIVE and raw.size_matched < prior:
+            raise ValueError('terminal cumulative quantity regressed')
+        filled = max(raw.size_matched,prior) if status == OrderStatus.LIVE else raw.size_matched
+        order = Order(oid,r,filled,q.quantity-filled if status == OrderStatus.LIVE else D('0'),
+                      status,previous.observed_at,not uncertain,cancels.get(oid))
+        return OrderResult(r,Outcome.UNKNOWN if uncertain else Outcome.SUCCESS,order,previous.observed_at)
+
+    def _missing_order(self, previous, candidates, cancels):
+        # Iterator exhaustion is required: a later-page failure cannot prove absence.
+        opens = tuple(o for page in self.client.list_open_orders(market=self.condition_id) for o in page.items)
+        if any(not isinstance(o.id,str) or not o.id for o in opens):
+            raise ValueError('incomplete open order readback')
+        trades = self._trade_facts()
+        recorded = tuple(f for _,f in self.journal.events('fill') if f.request_id == previous.request.request_id)
+        owned = {f.order_id for f in (*trades.values(),*recorded)
+                 if f.request_id == previous.request.request_id}
+        rows = [o for o in opens if o.id in candidates]
+        identities = owned | {o.id for o in rows}
+        if len(identities) > 1 or len(rows) > 1:
+            raise ValueError('conflicting signed order identities')
+        if rows:
+            return self._observed_order(rows[0],rows[0].id,previous,cancels)
+        if previous.order or owned:
+            oid = previous.order.order_id if previous.order else next(iter(owned))
+            filled = sum((f.quantity for f in trades.values() if f.order_id == oid),D('0'))
+            proven = max(previous.order.filled_quantity if previous.order else D('0'),
+                         sum((f.quantity for _,f in self.journal.events('fill') if f.order_id == oid),D('0')))
+            if filled < proven or any(f.trade_id not in trades for f in recorded):
+                raise ValueError('complete trade history has not caught up')
+            order = Order(oid,previous.request,filled,D('0'),
+                OrderStatus.FILLED if filled == previous.request.quote.quantity else OrderStatus.CANCELLED,
+                self._now(),True,cancels.get(oid))
+            return OrderResult(previous.request,Outcome.SUCCESS,order,self._now())
+        if len(candidates) == 2 and self._now() >= previous.request.expires_at+timedelta(seconds=120):
+            return OrderResult(previous.request,Outcome.FAILED,None,self._now())
+        return previous
+
     def read_orders(self):
         results = self._history()
-        signed = {p['request_id']: p for _, p in self.journal.events('signed')}
-        cancels = {p['order_id']: p['at'] for _, p in self.journal.events('cancel_intent')}
-        for key, previous in results.items():
+        signed = {p['request_id']:p for _,p in self.journal.events('signed')}
+        cancels = {p['order_id']:p['at'] for _,p in self.journal.events('cancel_intent')}
+        for key,previous in results.items():
             if (previous.outcome == Outcome.FAILED and previous.order is None
                     or previous.order is not None and previous.order.authoritative and previous.order.status != OrderStatus.LIVE):
                 continue
-            candidates = (previous.order.order_id,) if previous.order else signed.get(key, {}).get('order_ids', ())
-            found = False
+            candidates = (previous.order.order_id,) if previous.order else signed.get(key,{}).get('order_ids',())
+            found, missing = [], []
             for oid in candidates:
                 raw = self._order_readback(oid)
                 if raw is None:
-                    # An absent active order or 404 never rejects an unresolved intent.
-                    continue
-                found = True
-                r, q = previous.request, previous.request.quote
-                if (raw.id != oid or raw.maker_address.lower() != self.wallet.lower()
-                        or raw.condition_id != self.condition_id or raw.token_id != q.token_id
-                        or raw.side != 'BUY' or raw.price != q.price or raw.original_size != q.quantity
-                        or raw.order_type != 'GTD' or raw.expires_at != datetime.fromtimestamp(int(r.expires_at.timestamp()), UTC)):
-                    raise ValueError('owned order readback identity mismatch')
-                uncertain = raw.status in ('DELAYED','UNMATCHED')
-                status = {'LIVE': OrderStatus.LIVE, 'DELAYED': OrderStatus.LIVE, 'UNMATCHED': OrderStatus.LIVE, 'MATCHED': OrderStatus.FILLED,
-                          'CANCELED': OrderStatus.CANCELLED, 'CANCELLED': OrderStatus.CANCELLED}.get(raw.status)
-                if status is None or not D('0') <= raw.size_matched <= q.quantity:
-                    raise ValueError('unknown order status or quantity')
-                filled = max(raw.size_matched,previous.order.filled_quantity if previous.order is not None else D('0')) if status == OrderStatus.LIVE else raw.size_matched
-                remaining = q.quantity - filled if status == OrderStatus.LIVE else D('0')
-                observed = previous.observed_at
-                order = Order(oid, r, filled, remaining, status, observed, not uncertain, cancels.get(oid))
-                outcome = Outcome.UNKNOWN if uncertain else Outcome.SUCCESS
-                if previous.order != order or previous.outcome != outcome:
-                    result = OrderResult(r, outcome, order, observed)
-                    self.journal.append('order_result', result)
-                    if uncertain:
-                        self.journal.append('diagnostic',dict(request_id=key,reason='order status '+raw.status+' unresolved'))
-                    results[key] = result
-                break
-            if not found and previous.order is not None:
-                order = replace(previous.order,authoritative=False)
-                result = OrderResult(previous.request,Outcome.UNKNOWN,order,previous.observed_at)
-                if previous != result:
-                    self.journal.append('order_result',result)
-                    self.journal.append('diagnostic',dict(request_id=key,reason='order history unavailable'))
+                    missing.append(oid)
+                elif raw is not _UNAVAILABLE:
+                    found.append(self._observed_order(raw,oid,previous,cancels))
+            if len(found) > 1:
+                raise ValueError('conflicting signed order identities')
+            result = found[0] if found else previous
+            if not found and candidates and len(missing) == len(candidates):
+                try:
+                    result = self._missing_order(previous,candidates,cancels)
+                except Exception:
+                    result = previous
+            if result is previous and previous.order is not None:
+                result = OrderResult(previous.request,Outcome.UNKNOWN,replace(previous.order,authoritative=False),previous.observed_at)
+            if result != previous:
+                self.journal.append('order_result',result)
+                if result.outcome == Outcome.FAILED and result.order is None:
+                    reason = '到期未见'
+                elif result.outcome == Outcome.UNKNOWN:
+                    reason = 'order readback unresolved'
+                else:
+                    reason = None
+                if reason:
+                    self.journal.append('diagnostic',dict(request_id=key,reason=reason,at=self._now()))
                 results[key] = result
         return tuple(r.order if r.order else r for r in results.values())
 
@@ -176,15 +232,29 @@ class LiveSDK:
                 outcome = Outcome.FAILED
         except Exception:
             pass
+        if self._order_reads is not None:
+            self._order_reads.pop(order_id,None)
         order = replace(known.order, authoritative=False, observed_at=at, cancel_requested_at=at)
         result = OrderResult(known.request, outcome, order, at)
         self.journal.append('order_result', result)
         self.journal.append('diagnostic', dict(order_id=order_id, reason='cancel '+outcome.value, at=at))
         return result
 
-    def read_trades(self):
-        orders = {o.order_id: o.request for o in self.read_orders() if isinstance(o, Order)}
-        known = {f.trade_id: f for _, f in self.journal.events('fill')}
+    def _trade_facts(self):
+        results = self._history()
+        signed = {p['request_id']:p for _,p in self.journal.events('signed')}
+        orders = {}
+        for key, result in results.items():
+            ids = ((result.order.order_id,) if result.order else
+                   signed.get(key,{}).get('order_ids',()) if result.outcome != Outcome.FAILED else ())
+            for oid in ids:
+                if oid in orders and orders[oid] != result.request:
+                    raise ValueError('conflicting owned order identity')
+                orders[oid] = result.request
+        facts = {}
+        known = {f.trade_id:f for _,f in self.journal.events('fill')}
+        identities = {f.request_id:f.order_id for _,f in self.journal.events('fill')}
+        identities.update({key:r.order.order_id for key,r in results.items() if r.order})
         for page in self.client.list_account_trades(market=self.condition_id, maker_address=self.wallet):
             for raw in page.items:
                 for maker in raw.maker_orders:
@@ -199,13 +269,33 @@ class LiveSDK:
                         continue
                     if raw.status != 'CONFIRMED':
                         raise ValueError('owned fill is not settled')
+                    if (not maker.matched_amount.is_finite() or not 0 < maker.matched_amount <= r.quote.quantity
+                            or not maker.price.is_finite() or not 0 < maker.price <= r.quote.price):
+                        raise ValueError('invalid owned fill quantity or price')
+                    if r.request_id in identities and identities[r.request_id] != maker.order_id:
+                        raise ValueError('conflicting signed order identities')
+                    identities[r.request_id] = maker.order_id
                     fill = Fill(raw.id+':'+maker.order_id, maker.order_id, r.request_id, self.owner,
                         self.condition_id, maker.token_id, maker.matched_amount, maker.price, D('0'), raw.matched_at)
-                    if fill.trade_id in known and known[fill.trade_id] != fill:
+                    if ((fill.trade_id in facts and facts[fill.trade_id] != fill)
+                            or (fill.trade_id in known and known[fill.trade_id] != fill)):
                         raise ValueError('fill identity changed')
-                    if fill.trade_id not in known:
-                        self.journal.append('fill', fill)
-                        known[fill.trade_id] = fill
+                    facts[fill.trade_id] = fill
+        for oid,r in orders.items():
+            if sum((f.quantity for f in facts.values() if f.order_id == oid),D('0')) > r.quote.quantity:
+                raise ValueError('owned fills exceed intent')
+        return facts
+
+    def read_trades(self):
+        facts = self._trade_facts()
+        known = {f.trade_id:f for _,f in self.journal.events('fill')}
+        for key,fill in facts.items():
+            if key in known and known[key] != fill:
+                raise ValueError('fill identity changed')
+        for key,fill in facts.items():
+            if key not in known:
+                self.journal.append('fill',fill)
+                known[key] = fill
         return tuple(known.values())
 
     def _positions(self):

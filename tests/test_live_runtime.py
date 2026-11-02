@@ -246,7 +246,7 @@ def test_restart_preserves_hedge(tmp_path):
     restarted_sdk,reopened = adapter(tmp_path,ex.sdk)
     ex.reject_tokens.clear()
     obs.plans = (inputs(no='.60'),)
-    restarted = LiveRunner(RunConfig(D('100'),AT+timedelta(seconds=10)),restarted_sdk,obs)
+    restarted = LiveRunner(RunConfig(D('100'),AT+timedelta(seconds=10)),restarted_sdk,obs,clock=lambda:ex.now)
     restarted.step(AT+timedelta(seconds=10))
     assert restarted.ledger.snapshot().positions == before
     hedges = [r for r in restarted.ledger.snapshot().requests if r.purpose == 'hedge']
@@ -380,7 +380,7 @@ def test_one_order_read_per_round(tmp_path,restart):
     if restart:
         journal.close()
         live,journal=adapter(tmp_path,ex.sdk)
-        runner=LiveRunner(RunConfig(D('100'),AT+timedelta(seconds=20)),live,obs)
+        runner=LiveRunner(RunConfig(D('100'),AT+timedelta(seconds=20)),live,obs,clock=lambda:ex.now)
     ex.fill(yes,'1','.40',at=AT+timedelta(seconds=19))
     ex.sdk.get_order.reset_mock()
     runner.step(AT+timedelta(seconds=20))
@@ -425,3 +425,95 @@ def test_denied_or_failed_round_cancels_owned_orders(tmp_path,reason):
     assert runner.ledger.snapshot().capital.total==D('10')
     if reason in ('jp-closed','blocked'):assert result['run']['region_check']=='blocked'
     assert runner.drain(timeout_s=0)==1
+
+
+def timeout_second_post(ex):
+    def post(signed):
+        if len(ex.posts) == 1:
+            ex.posts.append(signed)
+            raise TimeoutError('synthetic secret')
+        return ex.post(signed)
+    ex.sdk.post_order.side_effect = post
+
+
+def test_unknown_submission_expiry_restores_rounds_without_replay(tmp_path):
+    runner,ex,live,journal,obs = world(tmp_path)
+    timeout_second_post(ex)
+    runner.step(AT)
+    original = tuple(p['request'] for _,p in journal.events('intent'))
+    assert len(original) == 2 and len(runner.ledger.snapshot().pending) == 1
+    for seconds in (10,3719):
+        ex.now = AT+timedelta(seconds=seconds)
+        runner.step(ex.now)
+        assert len(ex.posts) == 2 and runner.ledger.snapshot().capital.total == D('10')
+        assert runner.ledger.snapshot().pending == (original[1],)
+    assert ex.sdk.cancel_order.call_count >= 1
+    ex.now = AT+timedelta(seconds=3730)
+    runner.step(ex.now)
+    state = runner.ledger.snapshot()
+    assert not state.pending and len(ex.posts) == 4
+    assert {r.reservation_terms.generation for r in state.requests} == {0,1}
+    assert state.capital.total <= D('100')
+    assert len({p['request'].request_id for _,p in journal.events('intent')}) == 4
+    assert all(s.salt != ex.posts[1].salt for s in ex.posts[2:])
+    assert 'synthetic secret' not in str(journal.events())
+    assert runner.drain(timeout_s=0) == 0
+
+
+def test_unknown_submission_expiry_survives_restart(tmp_path):
+    from lp_v2.live_runtime import LiveRunner
+    runner,ex,live,journal,obs = world(tmp_path)
+    timeout_second_post(ex)
+    runner.step(AT)
+    original = tuple(p['request'] for _,p in journal.events('intent'))
+    journal.close()
+    live,journal = adapter(tmp_path,ex.sdk)
+    runner = LiveRunner(RunConfig(D('100'),AT),live,obs,clock=lambda:ex.now)
+    ex.now = AT+timedelta(seconds=3719)
+    get = ex.sdk.get_order.side_effect
+    ex.sdk.get_order.side_effect = TimeoutError('synthetic secret')
+    runner.step(ex.now)
+    assert runner.ledger.snapshot().pending == (original[1],)
+    assert runner.ledger.snapshot().capital.total == D('10') and len(ex.posts) == 2
+    ex.sdk.get_order.side_effect = get
+    journal.close()
+    live,journal = adapter(tmp_path,ex.sdk)
+    runner = LiveRunner(RunConfig(D('100'),AT),live,obs,clock=lambda:ex.now)
+    ex.now += timedelta(seconds=1)
+    runner.step(ex.now)
+    assert not runner.ledger.snapshot().pending and len(ex.posts) == 4
+    assert {r.reservation_terms.generation for r in runner.ledger.snapshot().requests} == {0,1}
+    runner.step(ex.now+timedelta(seconds=10))
+    assert len(ex.posts) == 4
+    failed = [r for _,r in journal.events('order_result') if r.request == original[1] and r.outcome.value == 'failed']
+    assert len(failed) == 1 and failed[0].observed_at == AT+timedelta(seconds=3720)
+    assert runner.drain(timeout_s=0) == 0
+    assert 'synthetic secret' not in str(journal.events())
+
+
+@pytest.mark.parametrize('quantity',['0','2','10'])
+def test_missing_cancelled_history_drain_succeeds(tmp_path,quantity):
+    from polymarket.errors import RequestRejectedError
+    runner,ex,live,journal,obs = world(tmp_path)
+    runner.step(AT)
+    oid = next(oid for oid,o in ex.orders.items() if o.token_id == '101')
+    ex.orders['foreign'] = ex.orders[oid].model_copy(update={'id':'foreign','maker_address':'0x'+'9'*40})
+    if D(quantity):
+        ex.fill(oid,quantity,'.40')
+    def current(*,order_id):
+        row = ex.orders.get(order_id)
+        if row is None or row.status != 'LIVE':
+            raise RequestRejectedError('absent',status=404)
+        return row
+    ex.sdk.get_order.side_effect = current
+    assert runner.drain(timeout_s=0) == 0
+    state = runner.ledger.snapshot()
+    assert not state.pending and all(o.authoritative and o.status != 'live' for o in state.orders)
+    assert sum((p.quantity for p in state.positions),D('0')) == D(quantity)
+    assert state.capital.inventory_cost == D(quantity)*D('.40')
+    assert state.cash == D('100')-D(quantity)*D('.40')
+    stop = journal.events('stop_result')[-1][1]
+    assert stop['reconciliation'] == 'SUCCESS' and stop['exit_code'] == 0
+    assert sum((p['quantity'] for p in stop['inventory']),D('0')) == D(quantity)
+    assert ex.orders['foreign'].status == 'LIVE'
+    assert all(c.kwargs['order_id'] != 'foreign' for c in ex.sdk.cancel_order.call_args_list)

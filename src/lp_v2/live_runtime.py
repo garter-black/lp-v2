@@ -60,7 +60,7 @@ class LiveRunner:
         if self._next is not None and (now-self._next).total_seconds() < 10:
             return self.snapshot()
         self._next = now
-        with self.sdk.read_cycle():
+        with self.sdk.read_cycle(now=now):
             reconciled = False
             self._region = UNKNOWN
             plans = ()
@@ -238,7 +238,7 @@ class LiveRunner:
         code = 1
         reconciled = False
         while True:
-            with self.sdk.read_cycle():
+            with self.sdk.read_cycle(now=self.clock()):
                 # Cancellation of proven own ids must not depend on healthy read endpoints.
                 self._cancel_owned(monotonic(),attempted)
                 try:

@@ -21,12 +21,18 @@ class Exchange:
         self.now = AT
         self.sdk.create_limit_order.side_effect = self.sign
         self.sdk.post_order.side_effect = self.post
-        self.sdk.get_order.side_effect = lambda *, order_id: self.orders[order_id]
+        self.sdk.get_order.side_effect = self.get_order
         self.sdk.list_open_orders.side_effect = lambda **kw: (SimpleNamespace(items=tuple(o for o in self.orders.values() if o.status == 'LIVE')),)
         self.sdk.list_account_trades.side_effect = lambda **kw: (SimpleNamespace(items=tuple(self.trades)),)
         self.sdk.get_balance_allowance.side_effect = self.balance
         self.sdk.cancel_order.side_effect = self.cancel
         self.sdk.get_closed_only_mode.return_value = False
+
+    def get_order(self, *, order_id):
+        from polymarket.errors import RequestRejectedError
+        if order_id not in self.orders:
+            raise RequestRejectedError("absent",status=404)
+        return self.orders[order_id]
 
     def sign(self, **kw):
         return replace(boundary().create_limit_order.return_value, token_id=kw['token_id'],

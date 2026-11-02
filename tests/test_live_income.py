@@ -76,7 +76,7 @@ def test_income_formula_and_unknown(tmp_path):
     p=inputs(yes='.39')
     p=replace(p,books=tuple(replace(b,observed_at=AT+timedelta(seconds=100)) for b in p.books))
     obs=Observations((p,));obs.region={}
-    runner=LiveRunner(RunConfig(D('100'),AT),live,obs)
+    runner=LiveRunner(RunConfig(D('100'),AT),live,obs,clock=lambda:ex.now)
     result=runner.step(AT+timedelta(seconds=100))
     fields=result['markets'][0]['m4']
     assert result['schema_version']==1
@@ -86,7 +86,7 @@ def test_income_formula_and_unknown(tmp_path):
     assert D(fields['net_yield_pct_per_day'])==D('15')
     assert D(fields['lp_yield_pct_per_day'])==D('10')
     # Restart keeps today's baseline and time-weighted occupation.
-    restarted=LiveRunner(RunConfig(D('100'),AT+timedelta(seconds=100)),live,obs)
+    restarted=LiveRunner(RunConfig(D('100'),AT+timedelta(seconds=100)),live,obs,clock=lambda:ex.now)
     assert restarted.step(AT+timedelta(seconds=100))['markets'][0]['m4']==fields
     ex.sdk.list_user_earnings_for_day.side_effect=ValueError('unavailable')
     missing=restarted.step(AT+timedelta(seconds=160))['markets'][0]['m4']
@@ -119,7 +119,7 @@ def test_continuous_utc_rollover_keeps_daily_income(tmp_path,gap):
         p=inputs(yes=bid)
         obs.plans=(replace(p,books=tuple(replace(b,observed_at=at) for b in p.books)),)
     books(start,'.40')
-    runner=LiveRunner(RunConfig(D('100'),start),live,obs)
+    runner=LiveRunner(RunConfig(D('100'),start),live,obs,clock=lambda:ex.now)
     ex.reject_tokens.add('102')
     runner.step(start)
     ex.fill('order-1','2','.40',at=start+timedelta(seconds=1))
@@ -130,7 +130,7 @@ def test_continuous_utc_rollover_keeps_daily_income(tmp_path,gap):
     books(before,'.40')
     runner.step(before)
     if gap=='restart':
-        runner=LiveRunner(RunConfig(D('100'),midnight),live,obs)
+        runner=LiveRunner(RunConfig(D('100'),midnight),live,obs,clock=lambda:ex.now)
     if gap=='failed':
         original=ex.sdk.list_account_trades.side_effect
         ex.sdk.list_account_trades.side_effect=TimeoutError('unavailable')
@@ -162,7 +162,7 @@ def test_failed_round_does_not_republish_old_income_as_current(tmp_path,rollover
     from tests.test_live_runtime import inputs,Observations
     live,journal,ex,calls=income_world(tmp_path)
     obs=Observations((inputs(),))
-    runner=LiveRunner(RunConfig(D('100'),AT),live,obs)
+    runner=LiveRunner(RunConfig(D('100'),AT),live,obs,clock=lambda:ex.now)
     runner.step(AT)
     before=runner.step(AT+timedelta(seconds=10))
     assert D(before['markets'][0]['m4']['net_profit'])==3
