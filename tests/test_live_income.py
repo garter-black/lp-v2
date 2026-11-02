@@ -33,6 +33,7 @@ def income_world(tmp_path):
 def test_income_reads_utc_market_and_cadence(tmp_path):
     live,journal,ex,calls=income_world(tmp_path)
     live.place_order(request(),at=AT)
+    live.read_orders()  # Scoring is measured only after authoritative current-live readback.
     facts=live.read_income(AT)
     assert facts['reward_today']==D('2') and facts['rebate_today']==D('1')
     assert facts['reward_share']==D('25')
@@ -122,7 +123,7 @@ def test_continuous_utc_rollover_keeps_daily_income(tmp_path,gap):
     ex.reject_tokens.add('102')
     runner.step(start)
     ex.fill('order-1','2','.40',at=start+timedelta(seconds=1))
-    obs.region={}
+    # This valuation/cadence fixture stays eligible; deny/cancel behavior has its own regression.
     midnight=AT+timedelta(days=1)
     seconds=25 if gap=='failed' else 12 if gap=='restart' else gap
     before=midnight-timedelta(seconds=seconds)
@@ -173,3 +174,31 @@ def test_failed_round_does_not_republish_old_income_as_current(tmp_path,rollover
     assert set(failed['markets'][0]['m4'].values())=={'UNKNOWN'}
     assert failed['freshness']['decision_as_of']==(AT+timedelta(seconds=10)).isoformat()
     assert failed['accounting']==dict(status='UNKNOWN',as_of=(AT+timedelta(seconds=10)).isoformat())
+
+
+def test_scoring_only_current_owned_live_orders(tmp_path):
+    from lp_v2.models import Quote
+    live,journal,ex,calls=income_world(tmp_path)
+    orders={}
+    for name in ('live','filled','cancelled','uncertain'):
+        r=replace(request(),request_id=name,quote=Quote(CID,'101',D('.40'),D('1')))
+        orders[name]=live.place_order(r,at=AT).order.order_id
+    ex.fill(orders['filled'],'1','.40')
+    live.cancel_order(orders['cancelled'],at=AT+timedelta(seconds=1))
+    ex.reject_tokens.add('102')
+    live.place_order(replace(request(),request_id='rejected',quote=Quote(CID,'102',D('.50'),D('1'))),at=AT)
+    ex.orders['foreign']=ex.orders[orders['live']].model_copy(update={'id':'foreign'})
+    original=ex.sdk.get_order.side_effect
+    def get(*,order_id):
+        if order_id==orders['uncertain']:raise TimeoutError('unavailable')
+        return original(order_id=order_id)
+    ex.sdk.get_order.side_effect=get
+    live.read_orders()
+    facts=live.read_income(AT)
+    assert facts['scoring']=={orders['live']:True}
+    assert [c.kwargs['order_id'] for c in ex.sdk.get_order_scoring.call_args_list]==[orders['live']]
+    live.read_income(AT+timedelta(seconds=59))
+    assert ex.sdk.get_order_scoring.call_count==1
+    ex.terminal(orders['live']);live.read_orders()
+    assert live.read_income(AT+timedelta(seconds=60))['scoring']=={}
+    assert ex.sdk.get_order_scoring.call_count==1

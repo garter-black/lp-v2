@@ -30,7 +30,7 @@ def boundary():
         side='BUY', signature='0x'+'0'*130, signature_type=2, signer=SIGNER, taker_amount=10000000,
         timestamp=int(AT.timestamp()*1000), token_id=TOKENS[0], post_only=True)
     sdk.get_order.side_effect = KeyError('unavailable')
-    sdk.post_order.return_value = AcceptedOrder(order_id='order-1', status='live', making_amount=D('0'), taking_amount=D('0'),trade_ids=(),transactions_hashes=())
+    sdk.post_order.return_value = AcceptedOrder(order_id='0x083de447758da764497f6ef7506bd6130182da09d47f60b5660d59d2bba90c12', status='live', making_amount=D('0'), taking_amount=D('0'),trade_ids=(),transactions_hashes=())
     return sdk
 
 
@@ -233,11 +233,10 @@ def test_merge_receipt_and_cash_gate(tmp_path, mode):
     txhash = '0x'+'c'*64
     exchange.sdk.merge_positions.return_value = SyncGaslessTransactionHandle('relay-1',txhash,relay,1,0)
     relay.get_json.return_value = dict(state='STATE_NEW' if mode == 'ack' else 'STATE_CONFIRMED',transaction_id='relay-1',transaction_hash=txhash)
-    def topic(address):
-        return '0x'+address[2:].zfill(64)
-    receipt = dict(status='0x0' if mode == 'failed' else '0x1',transactionHash=txhash,logs=[
-        dict(address=env.collateral_token,topics=['0x'+keccak(text='Transfer(address,address,uint256)').hex(),topic(env.collateral_adapter),topic(WALLET)],data='0x'+encode(['uint256'],[2000000]).hex()),
-        dict(address=env.conditional_tokens,topics=['0x'+keccak(text='TransferBatch(address,address,address,uint256[],uint256[])').hex(),topic(env.collateral_adapter),topic(WALLET),topic('0x'+'0'*40)],data='0x'+encode(['uint256[]','uint256[]'],[[101,102],[2000000,2000000]]).hex())])
+    receipt = receipt_fixture()
+    receipt.update(status='0x0' if mode == 'failed' else '0x1',transactionHash=txhash)
+    if mode == 'unrelated-cash':
+        receipt['logs'].pop(0)  # Cash growth without correlated owned-token outflow is not proof.
     if mode == 'wrong-receipt':
         receipt['transactionHash'] = '0x'+'d'*64
     rpc.eth_get_transaction_receipt.return_value = None if mode == 'no-receipt' else receipt
@@ -276,3 +275,201 @@ def test_merge_receipt_and_cash_gate(tmp_path, mode):
     restored.rpc,restored.relayer = rpc,relay
     restored.merge(merge,at=merge.created_at)
     assert exchange.sdk.merge_positions.call_count == 1
+
+
+def receipt_fixture(shape='standard'):
+    from pathlib import Path
+    import json
+    return json.loads((Path(__file__).parent/'data'/'m4_merge_receipts'/f'{shape}.json').read_text())['receipt']
+
+
+def merge_world(tmp_path,receipt,*,yes_quantity='2'):
+    from polymarket.transactions import SyncGaslessTransactionHandle
+    from polymarket.clients._transport import SyncTransport
+    from polymarket._internal.eoa.rpc import SyncJsonRpcClient
+    from tests.fakes.live_exchange import Exchange
+    from lp_v2.models import MergeRequest
+    from lp_v2.ledger import Ledger
+    ex=Exchange()
+    live,journal=adapter(tmp_path,ex.sdk)
+    rpc=create_autospec(SyncJsonRpcClient,instance=True,spec_set=True)
+    relay=create_autospec(SyncTransport,instance=True,spec_set=True)
+    live.rpc,live.relayer=rpc,relay
+    tx=receipt['transactionHash']
+    ex.sdk.merge_positions.return_value=SyncGaslessTransactionHandle('relay-1',tx,relay,1,0)
+    relay.get_json.return_value=dict(state='STATE_NEW',transaction_id='relay-1',transaction_hash=tx)
+    rpc.eth_get_transaction_receipt.return_value=receipt
+    terms=ReservationTerms(TOKENS,D(yes_quantity),(D('0'),D('0')))
+    for i,token,price,quantity in [(1,'101','.40',yes_quantity),(2,'102','.50','2')]:
+        live.place_order(replace(request(),request_id=f'pair-{i}',quote=Quote(CID,token,D(price),D(quantity)),reservation_terms=terms),at=AT)
+        ex.fill(f'order-{i}','2',price)
+    ledger=Ledger(OWNER,D('100'))
+    ledger.reconcile(live)
+    merge=MergeRequest('merge-1',OWNER,CID,*TOKENS,D('2'),AT+timedelta(seconds=5))
+    assert ledger.register_merge(merge)
+    assert live.merge(merge,at=merge.created_at).received_usdc==0
+    return live,journal,ex,ledger,merge,rpc,relay
+
+
+@pytest.mark.parametrize('shape',['standard','neg-risk'])
+@pytest.mark.parametrize('fault',[None,'status','hash','emitter','wallet','token','amount','missing-credit','missing-outflow'])
+def test_merge_real_event_shapes(tmp_path,shape,fault):
+    from eth_abi import encode
+    receipt=receipt_fixture(shape)
+    live,journal,ex,ledger,merge,rpc,relay=merge_world(tmp_path,receipt)
+    if fault=='status':receipt['status']='0x0'
+    if fault=='hash':receipt['transactionHash']='0x'+'d'*64
+    if fault=='emitter':receipt['logs'][0]['address']=SIGNER
+    if fault=='wallet':receipt['logs'][0]['topics'][2]='0x'+SIGNER[2:].zfill(64)
+    if fault=='token':receipt['logs'][0]['data']='0x'+encode(['uint256[]','uint256[]'],[[101,999],[2000000,2000000]]).hex()
+    if fault=='amount':receipt['logs'][0]['data']='0x'+encode(['uint256[]','uint256[]'],[[101,102],[1000000,2000000]]).hex()
+    if fault=='missing-credit':receipt['logs'].pop()
+    if fault=='missing-outflow':receipt['logs'].pop(0)
+    relay.get_json.return_value['state']='STATE_CONFIRMED'
+    # Real token/cash readbacks reflect the merge; receipt proof must still match.
+    ex.cash+=D('2');ex.quantities={'101':D('0'),'102':D('0')}
+    if fault is None:
+        ledger.reconcile(live)
+        assert ledger.snapshot().realized_profit==D('.20')
+        assert ledger.snapshot().capital.total==0
+        assert ledger.snapshot().cash==D('100.20')
+        before=ledger.snapshot();ledger.reconcile(live)
+        assert ledger.snapshot()==before
+        journal.close()
+        restored,reopened=adapter(tmp_path,ex.sdk)
+        restored.rpc,restored.relayer=rpc,relay
+        restored.merge(merge,at=merge.created_at)
+        assert restored.read_balance().merge_results[0].received_usdc==D('2')
+    else:
+        result=live.read_balance().merge_results[0]
+        assert result.received_usdc==0
+        assert result.outcome==(Outcome.FAILED if fault=='status' else Outcome.UNKNOWN)
+        assert ledger.snapshot().capital.total==D('2')
+    assert ex.sdk.merge_positions.call_count==1
+
+
+@pytest.mark.parametrize('proof',['valid','missing','wrong'])
+def test_merge_confirmation_with_concurrent_wallet_changes(tmp_path,proof):
+    receipt=receipt_fixture()
+    live,journal,ex,ledger,merge,rpc,relay=merge_world(tmp_path,receipt,yes_quantity='4')
+    ex.fill('order-1','1','.39',at=AT+timedelta(seconds=6))
+    ex.cash+=D('2.70')  # Exact merge payout2 plus independent reward0.70, less fill0.39.
+    ex.quantities={'101':D('1'),'102':D('0')}
+    relay.get_json.return_value['state']='STATE_CONFIRMED'
+    if proof=='missing':rpc.eth_get_transaction_receipt.return_value=None
+    if proof=='wrong':receipt['transactionHash']='0x'+'d'*64
+    if proof=='valid':
+        ledger.reconcile(live)
+        state=ledger.snapshot()
+        assert state.cash==D('100.51')
+        assert state.realized_profit==D('.20')
+        positions={p.token_id:p for p in state.positions}
+        assert positions['101'].quantity==D('1') and positions['101'].cost_usdc==D('.39')
+        assert positions['102'].quantity==0 and positions['102'].cost_usdc==0
+        assert state.capital.total==D('2')
+        assert state.merges[0].received_usdc==D('2')
+        assert tuple(p.cost_usdc for p in state.merges[0].consumed_positions)==(D('.80'),D('1.00'))
+        ledger.reconcile(live)
+        assert ledger.snapshot()==state
+    else:
+        assert live.read_balance().merge_results[0].received_usdc==0
+        with pytest.raises(ValueError,match='position'):
+            ledger.reconcile(live)
+        assert ledger.snapshot().capital.total==D('4')
+    live.merge(merge,at=merge.created_at)
+    assert ex.sdk.merge_positions.call_count==1
+
+
+@pytest.mark.parametrize('failure',['preparation','identity','post-timeout'])
+def test_pre_submission_failure_is_definitive(tmp_path,failure):
+    from tests.fakes.live_exchange import Exchange
+    from lp_v2.ledger import Ledger
+    from lp_v2.live_runtime import LiveRunner
+    from lp_v2.cli import RunConfig
+    from tests.test_live_runtime import Observations,inputs
+    ex=Exchange();live,journal=adapter(tmp_path,ex.sdk)
+    if failure=='preparation':
+        ex.sdk.create_limit_order.side_effect=ValueError('synthetic-secret-never-log')
+    elif failure=='identity':
+        ex.sdk.create_limit_order.side_effect=lambda **kw:replace(ex.sign(**kw),token_id='999')
+    else:
+        ex.sdk.post_order.side_effect=TimeoutError('synthetic-secret-never-log')
+    results=[]
+    for r in (request(),replace(request(),request_id='req-2',quote=Quote(CID,'102',D('.50'),D('10')))):
+        results.append(live.place_order(r,at=AT))
+        live.place_order(r,at=AT)
+    expected=Outcome.UNKNOWN if failure=='post-timeout' else Outcome.FAILED
+    assert all(r.outcome==expected for r in results)
+    assert ex.sdk.post_order.call_count==(2 if failure=='post-timeout' else 0)
+    facts=str(journal.events())
+    assert 'synthetic-secret-never-log' not in facts
+    if failure!='post-timeout':assert '未提交' in facts
+    ledger=Ledger(OWNER,D('100'));ledger.reconcile(live)
+    assert ledger.snapshot().capital.total==(D('10') if failure=='post-timeout' else 0)
+    assert bool(ledger.snapshot().pending)==(failure=='post-timeout')
+    runner=LiveRunner(RunConfig(D('100'),AT),live,Observations((inputs(),)),clock=lambda:AT)
+    assert runner.drain(timeout_s=0)==(1 if failure=='post-timeout' else 0)
+
+
+@pytest.mark.parametrize('status',['DELAYED','UNMATCHED','404','unavailable'])
+def test_nonterminal_statuses_and_missing_history(tmp_path,status):
+    from polymarket.errors import RequestRejectedError
+    from tests.fakes.live_exchange import Exchange
+    from lp_v2.ledger import Ledger
+    ex=Exchange();live,journal=adapter(tmp_path,ex.sdk)
+    oid=live.place_order(request(),at=AT).order.order_id
+    ex.reject_tokens.add('102')
+    live.place_order(replace(request(),request_id='opposite-rejected',quote=Quote(CID,'102',D('.50'),D('10'))),at=AT)
+    ex.fill(oid,'2','.40',at=AT+timedelta(seconds=1))
+    ledger=Ledger(OWNER,D('100'));ledger.reconcile(live)
+    original=ex.orders[oid]
+    if status in ('DELAYED','UNMATCHED'):
+        ex.orders[oid]=original.model_copy(update={'status':status,'size_matched':D('0')})
+    else:
+        ex.sdk.get_order.side_effect=RequestRejectedError('synthetic-secret-never-log',status=404) if status=='404' else TimeoutError('synthetic-secret-never-log')
+    fact=next(o for o in live.read_orders() if hasattr(o,'order_id'))
+    assert fact.request==request() and fact.order_id==oid
+    assert fact.filled_quantity==D('2') and fact.remaining_quantity==D('8')
+    assert fact.status=='live' and fact.authoritative is False
+    assert live.orders_verified() is False
+    count=len(ex.posts)
+    assert live.place_order(request(),at=AT).outcome==Outcome.UNKNOWN
+    assert len(ex.posts)==count
+    ledger.reconcile(live)
+    assert ledger.snapshot().capital.total==D('10')
+    assert 'synthetic-secret-never-log' not in str(journal.events())
+    assert journal.events('diagnostic')
+    ex.sdk.get_order.side_effect=lambda *,order_id:ex.orders[order_id]
+    ex.orders[oid]=original
+    ex.fill(oid,'1','.40',at=AT+timedelta(seconds=3))
+    ledger.reconcile(live)
+    assert ledger.snapshot().positions[0].quantity==D('3')
+    assert len(ledger.snapshot().fills)==2
+    live.cancel_order(oid,at=AT+timedelta(seconds=4))
+    ledger.reconcile(live)
+    assert ledger.snapshot().orders[0].authoritative
+    assert ledger.snapshot().orders[0].status=='cancelled'
+    assert ledger.snapshot().capital.total==D('3')
+    before=ledger.snapshot();ledger.reconcile(live)
+    assert ledger.snapshot()==before
+
+
+@pytest.mark.parametrize('matching',[False,True])
+def test_accepted_order_hash_diagnostic(tmp_path,matching):
+    # Literal standard EIP712 oracle over the fixed boundary SignedOrder fixture.
+    expected='0x083de447758da764497f6ef7506bd6130182da09d47f60b5660d59d2bba90c12'
+    sdk=boundary()
+    actual=expected if matching else 'unexpected-owned-order'
+    sdk.post_order.return_value=sdk.post_order.return_value.model_copy(update={'order_id':actual})
+    live,journal=adapter(tmp_path,sdk)
+    result=live.place_order(request(),at=AT)
+    assert result.outcome==Outcome.SUCCESS and result.order.order_id==actual
+    warnings=[p for _,p in journal.events('diagnostic') if p['reason']=='accepted order id mismatch']
+    assert len(warnings)==(0 if matching else 1)
+    if warnings:assert warnings[0]['request_id']==request().request_id and warnings[0]['order_id']==actual
+    assert expected in journal.events('signed')[0][1]['order_ids']
+    assert live.place_order(request(),at=AT)==result
+    journal.close()
+    recovered,reopened=adapter(tmp_path,sdk)
+    assert recovered.place_order(request(),at=AT)==result
+    assert sdk.post_order.call_count==1

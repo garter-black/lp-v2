@@ -1,6 +1,7 @@
 """Fixed-market execution boundary; durable intents are never blindly retried."""
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
+from contextlib import contextmanager
 from decimal import Decimal as D
 from polymarket.models.clob.order_response import AcceptedOrder, RejectedOrder
 from lp_v2.models import Balance, Fill, Position, MergeResult, Order, OrderResult, OrderStatus, Outcome
@@ -12,6 +13,28 @@ class LiveSDK:
         self.owner, self.condition_id, self.token_ids = owner, condition_id, tuple(token_ids)
         self.wallet, self.signer = wallet, signer
         self.rpc = self.relayer = self.http = None
+        self._order_reads = None
+
+    @contextmanager
+    def read_cycle(self):
+        """Reuse order reads inside one executor round; never across rounds."""
+        if self._order_reads is not None:
+            yield
+            return
+        self._order_reads = {}
+        try:
+            yield
+        finally:
+            self._order_reads = None
+
+    def _order_readback(self, order_id):
+        cache = self._order_reads if self._order_reads is not None else {}
+        if order_id not in cache:
+            try:
+                cache[order_id] = self.client.get_order(order_id=order_id)
+            except Exception:
+                cache[order_id] = None
+        return cache[order_id]
 
     def _validate(self, request, at):
         q, terms = request.quote, request.reservation_terms
@@ -43,6 +66,7 @@ class LiveSDK:
         self.journal.append('intent', dict(request=request, hedge_ceiling=ceiling))
         q = request.quote
         order, outcome, diagnostic = None, Outcome.UNKNOWN, 'ambiguous submission'
+        dispatched = False
         try:
             signed = self.client.create_limit_order(token_id=q.token_id, price=q.price, size=q.quantity,
                 side='BUY', post_only=True, expiration=int(request.expires_at.timestamp()))
@@ -50,18 +74,23 @@ class LiveSDK:
                     or signed.order_type != 'GTD' or signed.expiration != int(request.expires_at.timestamp())
                     or signed.maker.lower() != self.wallet.lower() or signed.signer.lower() != self.signer.lower()):
                 raise ValueError('signed identity mismatch')
+            signed_ids = _order_ids(signed)
             self.journal.append('signed', dict(request_id=request.request_id, salt=signed.salt, token_id=signed.token_id,
                 maker=signed.maker, signer=signed.signer, maker_amount=signed.maker_amount,
                 taker_amount=signed.taker_amount, expiration=signed.expiration, timestamp=signed.timestamp,
-                order_ids=_order_ids(signed)))
+                order_ids=signed_ids))
+            dispatched = True
             response = self.client.post_order(signed)
             if isinstance(response, AcceptedOrder) and response.order_id:
                 order = Order(response.order_id, request, D('0'), q.quantity, OrderStatus.LIVE, at, False)
                 outcome, diagnostic = Outcome.SUCCESS, 'accepted awaiting readback'
+                if response.order_id not in signed_ids:
+                    self.journal.append('diagnostic',dict(request_id=request.request_id,order_id=response.order_id,reason='accepted order id mismatch',at=at))
             elif isinstance(response, RejectedOrder) and response.code != 'unknown':
                 outcome, diagnostic = Outcome.FAILED, 'explicit rejection'
         except Exception:
-            diagnostic = 'submission unresolved'
+            outcome = Outcome.UNKNOWN if dispatched else Outcome.FAILED
+            diagnostic = 'submission unresolved' if dispatched else '未提交'
         result = OrderResult(request, outcome, order, at)
         self.journal.append('order_result', result)
         # Diagnostics are fixed application text; raw exceptions may contain credentials.
@@ -81,34 +110,52 @@ class LiveSDK:
         signed = {p['request_id']: p for _, p in self.journal.events('signed')}
         cancels = {p['order_id']: p['at'] for _, p in self.journal.events('cancel_intent')}
         for key, previous in results.items():
-            if previous.outcome == Outcome.FAILED and previous.order is None:
+            if (previous.outcome == Outcome.FAILED and previous.order is None
+                    or previous.order is not None and previous.order.authoritative and previous.order.status != OrderStatus.LIVE):
                 continue
             candidates = (previous.order.order_id,) if previous.order else signed.get(key, {}).get('order_ids', ())
+            found = False
             for oid in candidates:
-                try:
-                    raw = self.client.get_order(order_id=oid)
-                except Exception:
+                raw = self._order_readback(oid)
+                if raw is None:
                     # An absent active order or 404 never rejects an unresolved intent.
                     continue
+                found = True
                 r, q = previous.request, previous.request.quote
                 if (raw.id != oid or raw.maker_address.lower() != self.wallet.lower()
                         or raw.condition_id != self.condition_id or raw.token_id != q.token_id
                         or raw.side != 'BUY' or raw.price != q.price or raw.original_size != q.quantity
                         or raw.order_type != 'GTD' or raw.expires_at != datetime.fromtimestamp(int(r.expires_at.timestamp()), UTC)):
                     raise ValueError('owned order readback identity mismatch')
-                status = {'LIVE': OrderStatus.LIVE, 'MATCHED': OrderStatus.FILLED,
+                uncertain = raw.status in ('DELAYED','UNMATCHED')
+                status = {'LIVE': OrderStatus.LIVE, 'DELAYED': OrderStatus.LIVE, 'UNMATCHED': OrderStatus.LIVE, 'MATCHED': OrderStatus.FILLED,
                           'CANCELED': OrderStatus.CANCELLED, 'CANCELLED': OrderStatus.CANCELLED}.get(raw.status)
                 if status is None or not D('0') <= raw.size_matched <= q.quantity:
                     raise ValueError('unknown order status or quantity')
-                remaining = q.quantity - raw.size_matched if status == OrderStatus.LIVE else D('0')
+                filled = max(raw.size_matched,previous.order.filled_quantity if previous.order is not None else D('0')) if status == OrderStatus.LIVE else raw.size_matched
+                remaining = q.quantity - filled if status == OrderStatus.LIVE else D('0')
                 observed = previous.observed_at
-                order = Order(oid, r, raw.size_matched, remaining, status, observed, True, cancels.get(oid))
-                if previous.order != order or previous.outcome != Outcome.SUCCESS:
-                    result = OrderResult(r, Outcome.SUCCESS, order, observed)
+                order = Order(oid, r, filled, remaining, status, observed, not uncertain, cancels.get(oid))
+                outcome = Outcome.UNKNOWN if uncertain else Outcome.SUCCESS
+                if previous.order != order or previous.outcome != outcome:
+                    result = OrderResult(r, outcome, order, observed)
                     self.journal.append('order_result', result)
+                    if uncertain:
+                        self.journal.append('diagnostic',dict(request_id=key,reason='order status '+raw.status+' unresolved'))
                     results[key] = result
                 break
+            if not found and previous.order is not None:
+                order = replace(previous.order,authoritative=False)
+                result = OrderResult(previous.request,Outcome.UNKNOWN,order,previous.observed_at)
+                if previous != result:
+                    self.journal.append('order_result',result)
+                    self.journal.append('diagnostic',dict(request_id=key,reason='order history unavailable'))
+                results[key] = result
         return tuple(r.order if r.order else r for r in results.values())
+
+    def orders_verified(self):
+        return all((r.outcome == Outcome.FAILED and r.order is None)
+                   or (r.order is not None and r.order.authoritative) for r in self._history().values())
 
     def known_open_order_ids(self):
         """Durable ownership only; this read never depends on exchange availability."""
@@ -258,11 +305,7 @@ class LiveSDK:
                     continue
                 if receipt.get('status') != '0x1' or not _receipt_proves_merge(receipt,r,self.wallet):
                     continue
-                if self._cash() != baseline['cash']+r.quantity:
-                    continue
                 before = {p.token_id:p for p in baseline['positions']}
-                if any(D(self.client.get_balance_allowance(asset_type='CONDITIONAL',token_id=t).balance)/1000000 != before[t].quantity-r.quantity for t in self.token_ids):
-                    continue
                 consumed = tuple(replace(before[t],quantity=r.quantity,
                     cost_usdc=before[t].cost_usdc if r.quantity == before[t].quantity else before[t].cost_usdc*r.quantity/before[t].quantity,
                     updated_at=at) for t in self.token_ids)
@@ -292,7 +335,7 @@ class LiveSDK:
         try:
             scoring = {}
             for r in self._history().values():
-                if r.order is not None:
+                if r.order is not None and r.order.authoritative and r.order.status == OrderStatus.LIVE:
                     flag = self.client.get_order_scoring(order_id=r.order.order_id)
                     if type(flag) is not bool:
                         raise ValueError('invalid scoring fact')
@@ -379,10 +422,10 @@ def _receipt_proves_merge(receipt, request, wallet):
         address, topics = log['address'].lower(), [t.lower() for t in log['topics']]
         data = bytes.fromhex(log['data'][2:])
         if (address == env.collateral_token.lower() and len(topics) == 3 and topics[0] == transfer
-                and topics[2] == topic(wallet) and topics[1] in (topic(env.collateral_adapter),topic(env.neg_risk_collateral_adapter))):
+                and topics[2] == topic(wallet)):
             cash += decode(['uint256'],data)[0]
         if (address in (env.conditional_tokens.lower(),env.position_manager.lower()) and len(topics) == 4
-                and topics[2] == topic(wallet) and topics[3] == topic('0x'+'0'*40)):
+                and topics[2] == topic(wallet)):
             if topics[0] == single:
                 token,quantity = decode(['uint256','uint256'],data)
                 if token in burned:

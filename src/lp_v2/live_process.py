@@ -93,7 +93,8 @@ def stop_process(path,*,timeout_s=110,monotonic=real_monotonic,wait=sleep):
         with owner_file(path/'executor.lock') as lock:
             try:
                 fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-                return 1
+                # Idempotent ExecStop cleanup; prior drain evidence remains untouched.
+                return 0
             except BlockingIOError:
                 pass
             with owner_file(path/'process.json') as source:

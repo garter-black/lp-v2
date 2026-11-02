@@ -79,7 +79,7 @@ def test_stop_signals_owned_process(tmp_path,monkeypatch):
         (state/'process.json').write_text(json.dumps(metadata))
         assert stop_process(state)==1
         assert len(signals)==1
-    assert stop_process(state)==1
+    assert stop_process(state)==0
     assert stop_process(tmp_path/'missing')==1
     from lp_v2.cli import main
     assert main(['stop','--state-dir',str(tmp_path/'missing')])==1
@@ -208,3 +208,30 @@ def test_factory_rejects_identity_before_sdk_wallet_setup(tmp_path,monkeypatch,i
     with pytest.raises(ValueError,match='identity|signing'):
         create_live_runner(replace(config,market=market_id),public=public,http=http)
     assert constructed==[]
+
+
+def test_stop_after_executor_exit_is_idempotent(tmp_path,monkeypatch):
+    from lp_v2.live_process import ProcessLock,stop_process
+    import lp_v2.live_process as process
+    monkeypatch.setattr(process,'process_identity',lambda pid:'boot:123' if pid==os.getpid() else None)
+    signals=[]
+    monkeypatch.setattr(os,'pidfd_open',lambda *args:signals.append('opened'),raising=False)
+    state=tmp_path/'state'
+    with ProcessLock(state) as lease:
+        lease.finish(1)
+        before=(state/'stop-result.json').read_bytes()
+        metadata=json.loads((state/'process.json').read_text())
+        for invalid in (dict(metadata,identity='stale'),dict(metadata,pid=9999)):
+            (state/'process.json').write_text(json.dumps(invalid))
+            assert stop_process(state)==1
+        (state/'process.json').write_text('{')
+        assert stop_process(state)==1
+        (state/'process.json').write_text(json.dumps(metadata))
+    assert stop_process(state)==0
+    assert stop_process(state)==0
+    assert (state/'stop-result.json').read_bytes()==before
+    assert signals==[]
+    assert stop_process(tmp_path/'missing')==1
+    (state/'executor.lock').chmod(0o644)
+    assert stop_process(state)==1
+    assert signals==[]

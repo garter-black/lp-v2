@@ -24,6 +24,7 @@ class LiveRunner:
         self._accounting_at = None
         self._accounting_status = UNKNOWN
         self._income_at = None
+        self._safety_cancels = {}
         self._region = UNKNOWN
         self._m4 = {key: UNKNOWN for key in (*M4_FIELDS,"net_profit")}
         self._freshness = {}
@@ -59,50 +60,55 @@ class LiveRunner:
         if self._next is not None and (now-self._next).total_seconds() < 10:
             return self.snapshot()
         self._next = now
-        reconciled = False
-        plans = ()
-        try:
-            self.ledger.reconcile(self.sdk)
-            reconciled = True
-            self._accounting_at = now
-            self._rows = [r for r in (self.observations.read_fixed_market(now,self.condition_id) if hasattr(self.observations,'read_fixed_market') else self.observations.read_markets(now)) if r['condition_id'] == self.condition_id]
-            plans = tuple(r['plan'] for r in self._rows if r.get('plan') is not None)
-            self._last_plans = plans
-            if any(tuple(t.token_id for t in p.market.tokens) != self.sdk.token_ids for p in plans):
-                raise ValueError('frozen token identity changed')
-            region = self.observations.read_region_policy()
-            blocked = region.get('blocked')
-            country = region.get('country')
-            self._region = 'ok' if blocked is False else 'blocked' if blocked is True else UNKNOWN
-            allowed = (type(blocked) is bool and isinstance(country, str) and len(country) == 2
-                       and (blocked is False or (country == 'JP' and self.sdk.client.get_closed_only_mode() is False)))
-            if not allowed:
-                self.sdk.journal.append('region_denied', dict(at=now,region_check=self._region))
-                for row in self._rows:
-                    row.update(eligible=False,skip_reason='地区检查未通过或未知')
-            decision = self.engine.decide(plans, now=now) if allowed and not self.stop.is_set() else None
-            if decision is not None:
-                for c in decision.cancel:
-                    self.ledger.apply_order(self.sdk.cancel_order(c.order_id, at=now))
-                for request in decision.place:
-                    self.ledger.apply_order(self.sdk.place_order(request, at=now))
-                for request in decision.merge:
-                    self.ledger.apply_merge(self.sdk.merge(request, at=now))
-            self._m4 = self._income_fields(now,plans)
-            self._freshness = dict(decision_as_of=now,scores_as_of=now,wallet_as_of=now)
-
-        except Exception:
-            self._m4 = {key:UNKNOWN for key in (*M4_FIELDS,'net_profit')}
-            self._valuation_at = self._income_at = None
+        with self.sdk.read_cycle():
+            reconciled = False
             self._region = UNKNOWN
-            self.sdk.journal.append('diagnostic', dict(at=now,reason='round readback or execution unavailable'))
-            for row in self._rows:
-                row.update(eligible=False,skip_reason='读回未核实，暂停下单')
-        self._accounting_status = 'SUCCESS' if reconciled else UNKNOWN
-        self.sdk.journal.append('occupation',self._audit(now,reconciled,plans))
-        with self._lock:
-            self._snapshot = self._build(now)
-        return self.snapshot()
+            plans = ()
+            try:
+                self.ledger.reconcile(self.sdk)
+                reconciled = self.sdk.orders_verified()
+                if not reconciled:
+                    raise ValueError('owned order readback remains uncertain')
+                self._accounting_at = now
+                self._rows = [r for r in (self.observations.read_fixed_market(now,self.condition_id) if hasattr(self.observations,'read_fixed_market') else self.observations.read_markets(now)) if r['condition_id'] == self.condition_id]
+                plans = tuple(r['plan'] for r in self._rows if r.get('plan') is not None)
+                self._last_plans = plans
+                if any(tuple(t.token_id for t in p.market.tokens) != self.sdk.token_ids for p in plans):
+                    raise ValueError('frozen token identity changed')
+                region = self.observations.read_region_policy()
+                blocked = region.get('blocked')
+                country = region.get('country')
+                self._region = 'ok' if blocked is False else 'blocked' if blocked is True else UNKNOWN
+                allowed = (type(blocked) is bool and isinstance(country, str) and len(country) == 2
+                           and (blocked is False or (country == 'JP' and self.sdk.client.get_closed_only_mode() is False)))
+                if not allowed:
+                    self._cancel_owned(now.timestamp(),self._safety_cancels,at=now)
+                    self.sdk.journal.append('region_denied', dict(at=now,region_check=self._region))
+                    for row in self._rows:
+                        row.update(eligible=False,skip_reason='地区检查未通过或未知')
+                decision = self.engine.decide(plans, now=now) if allowed and not self.stop.is_set() else None
+                if decision is not None:
+                    for c in decision.cancel:
+                        self.ledger.apply_order(self.sdk.cancel_order(c.order_id, at=now))
+                    for request in decision.place:
+                        self.ledger.apply_order(self.sdk.place_order(request, at=now))
+                    for request in decision.merge:
+                        self.ledger.apply_merge(self.sdk.merge(request, at=now))
+                self._m4 = self._income_fields(now,plans)
+                self._freshness = dict(decision_as_of=now,scores_as_of=now,wallet_as_of=now)
+
+            except Exception:
+                self._m4 = {key:UNKNOWN for key in (*M4_FIELDS,'net_profit')}
+                self._valuation_at = self._income_at = None
+                self._cancel_owned(now.timestamp(),self._safety_cancels,at=now)
+                self.sdk.journal.append('diagnostic', dict(at=now,reason='round readback or execution unavailable'))
+                for row in self._rows:
+                    row.update(eligible=False,skip_reason='读回未核实，暂停下单')
+            self._accounting_status = 'SUCCESS' if reconciled else UNKNOWN
+            self.sdk.journal.append('occupation',self._audit(now,reconciled,plans))
+            with self._lock:
+                self._snapshot = self._build(now)
+            return self.snapshot()
 
     def _audit(self, now, reconciled, plans=()):
         from lp_v2.models import Outcome,OrderStatus
@@ -212,48 +218,50 @@ class LiveRunner:
         self._valuation_at = now if inventory_pnl is not None else None
         return metrics
 
+    def _cancel_owned(self, elapsed, attempted, *, at=None):
+        for oid in self.sdk.known_open_order_ids():
+            if elapsed-attempted.get(oid,float('-inf')) < 5:
+                continue
+            attempted[oid]=elapsed
+            try:
+                self.sdk.cancel_order(oid,at=at if at is not None else self.clock())
+            except Exception:
+                self.sdk.journal.append('diagnostic',dict(at=self.clock(),reason='owned cancel unavailable'))
+
     def drain(self, *, timeout_s=90, monotonic=None, wait=None):
         from time import monotonic as real_monotonic, sleep
         from lp_v2.models import OrderStatus
         monotonic = monotonic or real_monotonic
         wait = wait or sleep
         self.stop.set()
-        deadline, attempted = monotonic()+timeout_s, set()
+        deadline, attempted = monotonic()+timeout_s, {}
         code = 1
         reconciled = False
         while True:
-            # Cancellation of proven own ids must not depend on healthy read endpoints.
-            for oid in self.sdk.known_open_order_ids():
-                if oid not in attempted:
-                    attempted.add(oid)
-                    try:
-                        self.sdk.cancel_order(oid,at=self.clock())
-                    except Exception:
-                        self.sdk.journal.append('diagnostic',dict(at=self.clock(),reason='stop cancel unavailable'))
-            try:
-                self.ledger.reconcile(self.sdk)
-                reconciled = True
-                self._accounting_at = self.clock()
-                state = self.ledger.snapshot()
-                owned = {o.order_id for o in state.orders}
-                active = set()
-                for page in self.sdk.client.list_open_orders():
-                    for order in page.items:
-                        if not isinstance(order.id,str) or not order.id:
-                            raise ValueError('incomplete open order readback')
-                        if order.id in owned:
-                            active.add(order.id)
-                possible = {o.order_id for o in state.orders if not o.authoritative or o.status == OrderStatus.LIVE}
-                for oid in sorted(active | possible):
-                    if oid not in attempted:
-                        self.sdk.cancel_order(oid,at=self.clock())
-                        attempted.add(oid)
-                if not active and not possible and not state.pending:
-                    code = 0
-                    break
-            except Exception:
-                reconciled = False
-                self.sdk.journal.append('diagnostic',dict(at=self.clock(),reason='stop readback unavailable'))
+            with self.sdk.read_cycle():
+                # Cancellation of proven own ids must not depend on healthy read endpoints.
+                self._cancel_owned(monotonic(),attempted)
+                try:
+                    self.ledger.reconcile(self.sdk)
+                    reconciled = True
+                    self._accounting_at = self.clock()
+                    state = self.ledger.snapshot()
+                    owned = {o.order_id for o in state.orders}
+                    active = set()
+                    for page in self.sdk.client.list_open_orders():
+                        for order in page.items:
+                            if not isinstance(order.id,str) or not order.id:
+                                raise ValueError('incomplete open order readback')
+                            if order.id in owned:
+                                active.add(order.id)
+                    possible = {o.order_id for o in state.orders if not o.authoritative or o.status == OrderStatus.LIVE}
+                    self._cancel_owned(monotonic(),attempted)
+                    if not active and not possible and not state.pending:
+                        code = 0
+                        break
+                except Exception:
+                    reconciled = False
+                    self.sdk.journal.append('diagnostic',dict(at=self.clock(),reason='stop readback unavailable'))
             if monotonic() >= deadline:
                 break
             wait(min(1,max(0,deadline-monotonic())))

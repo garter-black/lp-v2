@@ -313,3 +313,115 @@ def test_stop_attempts_known_cancels_when_reads_fail(tmp_path,failed_read):
     assert [c.kwargs['order_id'] for c in ex.sdk.cancel_order.call_args_list]==['order-1','order-2']
     assert ex.orders['foreign'].status=='LIVE'
     assert journal.events('stop_result')[-1][1]['exit_code']==1
+
+
+@pytest.mark.parametrize('first',['exception','unknown','refused','persistent'])
+def test_stop_retries_transient_cancel(tmp_path,first):
+    from polymarket.models.clob.cancel import CancelOrdersResponse
+    runner,ex,live,journal,obs=world(tmp_path)
+    runner.step(AT)
+    ex.orders['foreign']=ex.orders['order-1'].model_copy(update={'id':'foreign'})
+    tick=[0];calls=[]
+    runner.clock=lambda:AT+timedelta(seconds=tick[0])
+    def cancel(*,order_id):
+        calls.append((order_id,tick[0]))
+        prior=sum(oid==order_id for oid,at in calls)
+        if first=='persistent' or (order_id=='order-1' and prior==1):
+            if first in ('exception','persistent'):raise TimeoutError('unavailable')
+            return CancelOrdersResponse(canceled=(),not_canceled={order_id:'refused'} if first=='refused' else {})
+        return ex.cancel(order_id=order_id)
+    ex.sdk.cancel_order.side_effect=cancel
+    def wait(seconds):
+        tick[0]+=seconds
+    result=runner.drain(timeout_s=11,monotonic=lambda:tick[0],wait=wait)
+    assert all(oid!='foreign' for oid,at in calls)
+    assert ex.orders['foreign'].status=='LIVE'
+    if first=='persistent':
+        assert result==1
+        for oid in ('order-1','order-2'):
+            assert [at for key,at in calls if key==oid]==[0,5,10]
+    else:
+        assert result==0
+        assert [at for oid,at in calls if oid=='order-1']==[0,5]
+        assert [at for oid,at in calls if oid=='order-2']==[0]
+        assert tick[0]==5
+
+
+@pytest.mark.parametrize('restart',[False,True])
+def test_one_order_read_per_round(tmp_path,restart):
+    from collections import Counter
+    from tests.test_live_sdk import request
+    from lp_v2.models import Quote
+    from lp_v2.live_runtime import LiveRunner
+    runner,ex,live,journal,obs=world(tmp_path)
+    terminal=[]
+    for i in range(10):
+        r=replace(request(),request_id=f'historical-{i}',quote=Quote(CID,'101' if i%2==0 else '102',D('.40'),D('10')))
+        oid=live.place_order(r,at=AT).order.order_id
+        live.cancel_order(oid,at=AT)
+        live.read_orders()
+        terminal.append(oid)
+    runner.step(AT)
+    current=[r.order_id for r in live.read_orders() if hasattr(r,'order_id') and r.order_id not in terminal]
+    # Actual exchange mutation, not a ledger/internal mock: one partial leg, opposite cancelled.
+    yes=next(oid for oid in current if ex.orders[oid].token_id=='101')
+    no=next(oid for oid in current if ex.orders[oid].token_id=='102')
+    ex.fill(yes,'5','.40',at=AT+timedelta(seconds=1));ex.terminal(no)
+    obs.plans=(inputs(no='.60'),)
+    ex.sdk.post_order.side_effect=TimeoutError('unknown hedge')
+    ex.sdk.get_order.reset_mock()
+    runner.step(AT+timedelta(seconds=10))
+    counts=Counter(c.kwargs['order_id'] for c in ex.sdk.get_order.call_args_list)
+    assert all(counts[oid]==0 for oid in terminal)
+    assert counts[yes]==counts[no]==1
+    assert max(counts.values())<=1
+    assert runner.ledger.snapshot().capital.total==D('10')
+    assert len([r for r in runner.ledger.snapshot().requests if r.purpose=='hedge'])==1
+    if restart:
+        journal.close()
+        live,journal=adapter(tmp_path,ex.sdk)
+        runner=LiveRunner(RunConfig(D('100'),AT+timedelta(seconds=20)),live,obs)
+    ex.fill(yes,'1','.40',at=AT+timedelta(seconds=19))
+    ex.sdk.get_order.reset_mock()
+    runner.step(AT+timedelta(seconds=20))
+    counts=Counter(c.kwargs['order_id'] for c in ex.sdk.get_order.call_args_list)
+    assert all(counts[oid]==0 for oid in (*terminal,no))
+    assert counts[yes]==1 and max(counts.values())<=1
+    assert runner.ledger.snapshot().positions[0].quantity==D('6')
+    assert len(runner.ledger.snapshot().fills)==2
+    ex.sdk.get_order.reset_mock()
+    assert runner.drain(timeout_s=0)==1  # Unknown hedge remains reserved; cancellation ack is insufficient.
+    counts=Counter(c.kwargs['order_id'] for c in ex.sdk.get_order.call_args_list)
+    assert all(counts[oid]==0 for oid in (*terminal,no))
+    assert max(counts.values())<=1
+
+
+@pytest.mark.parametrize('reason',['jp-closed','blocked','unknown','orders','trades','positions','balance','region'])
+def test_denied_or_failed_round_cancels_owned_orders(tmp_path,reason):
+    runner,ex,live,journal,obs=world(tmp_path)
+    runner.step(AT)
+    ex.orders['foreign']=ex.orders['order-1'].model_copy(update={'id':'foreign'})
+    ex.cancel_unknown=True
+    if reason=='jp-closed':
+        obs.region=dict(blocked=True,country='JP');ex.sdk.get_closed_only_mode.return_value=True
+    elif reason=='blocked':obs.region=dict(blocked=True,country='GB')
+    elif reason=='unknown':obs.region={}
+    elif reason=='orders':ex.sdk.get_order.side_effect=TimeoutError('unavailable')
+    elif reason=='trades':ex.sdk.list_account_trades.side_effect=TimeoutError('unavailable')
+    elif reason in ('positions','balance'):
+        original=ex.sdk.get_balance_allowance.side_effect
+        def get(**kwargs):
+            if (kwargs['asset_type']=='CONDITIONAL')==(reason=='positions'):raise TimeoutError('unavailable')
+            return original(**kwargs)
+        ex.sdk.get_balance_allowance.side_effect=get
+    else:
+        def region():raise TimeoutError('unavailable')
+        obs.read_region_policy=region
+    before=len(ex.posts)
+    result=runner.step(AT+timedelta(seconds=10))
+    assert len(ex.posts)==before
+    assert {c.kwargs['order_id'] for c in ex.sdk.cancel_order.call_args_list}=={'order-1','order-2'}
+    assert ex.orders['foreign'].status=='LIVE'
+    assert runner.ledger.snapshot().capital.total==D('10')
+    if reason in ('jp-closed','blocked'):assert result['run']['region_check']=='blocked'
+    assert runner.drain(timeout_s=0)==1
