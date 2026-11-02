@@ -27,8 +27,10 @@ class _Excluded(ValueError):
 class ReadOnlyPort(Protocol):
     def read_markets(self, now): ...
     def read_wallet(self, now): ...
+    def read_orders(self, now): ...
     def read_region(self): ...
     def safety(self, since): ...
+    def transport_safety(self): ...
     def close(self): ...
 
 
@@ -40,6 +42,8 @@ class ReadOnlySDK:
         self.__http = http if http is not None else httpx.Client(timeout=5, follow_redirects=False, trust_env=False)
         self.__credentials = credentials
         self.__stop = stop
+        from lp_v2.readonly_transport import ReadOnlyTransportAudit
+        self.__audit = ReadOnlyTransportAudit(self.__public, self.__http)
 
     def read_wallet(self, now):
         from decimal import Decimal
@@ -55,7 +59,10 @@ class ReadOnlySDK:
             return dict(available_usdc=UNKNOWN, as_of=None)
 
     def safety(self, since):
-        return dict(orders_sent=0, cancels_sent=0, since=since)
+        return self.__audit.safety(since)
+
+    def transport_safety(self):
+        return self.__audit.snapshot()
 
     def close(self):
         self.__public.close()
@@ -63,6 +70,7 @@ class ReadOnlySDK:
 
     def read_markets(self, now):
         """Bounded political catalog scan; retain every discovered exclusion."""
+        self.__audit.require_ready()
         from itertools import islice
         rows = []
         for page in islice(self.__public.list_markets(closed=False, tag_id=2, include_tag=True, page_size=20), 5):
@@ -162,6 +170,7 @@ class ReadOnlySDK:
                     plan=MarketPlan(m, tuple(books), max(m.min_order_size, m.rewards_min_size), (D('0'), D('0'))) if eligible else None)
 
     def __account_get(self, path, now, params):
+        self.__audit.require_ready()
         import base64, hashlib, hmac, re
         c = self.__credentials
         if (path not in ('/balance-allowance', '/data/orders') or c is None
@@ -186,13 +195,15 @@ class ReadOnlySDK:
             count, cursor, seen = 0, None, set()
             for _ in range(5):
                 data = self.__account_get('/data/orders', now, {} if cursor is None else dict(next_cursor=cursor))
-                if not isinstance(data['data'], list):
+                if (not isinstance(data['data'], list) or 'next_cursor' not in data
+                        or any(not isinstance(order, dict) or not isinstance(order.get('id'), str)
+                               or not order['id'] for order in data['data'])):
                     raise ValueError('orders')
                 count += len(data['data'])
                 cursor = data.get('next_cursor')
                 if cursor in (None, 'LTE='):
                     return dict(legacy_order_count=count, as_of=now)
-                if not isinstance(cursor, str) or cursor in seen:
+                if not isinstance(cursor, str) or not cursor or cursor in seen:
                     break
                 seen.add(cursor)
         except Exception:
@@ -201,6 +212,7 @@ class ReadOnlySDK:
 
     def read_region(self):
         try:
+            self.__audit.require_ready()
             r = self.__http.get('https://polymarket.com/api/geoblock')
             r.raise_for_status()
             blocked = r.json().get('blocked')

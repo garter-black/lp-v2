@@ -27,7 +27,7 @@ proof also prevents proposals. These conservative exclusions may yield no
 proposals on live data, and are visible rather than hidden.
 
 Decisions run on ten-second boundaries, score snapshots/ranking on ten-minute
-boundaries, and wallet reads on thirty-second boundaries. Safe existing simulated
+boundaries, and wallet plus legacy-order reads on thirty-second boundaries. Safe existing simulated
 quote pairs retain their prices for at least sixty seconds before repricing.
 Every round rechecks identity, quantity, post-only ask, reward band, fees,
 safety cushion and aggregate capital/risk limits; unsafe pairs are withdrawn
@@ -38,8 +38,32 @@ same ten-minute score cadence. Missing score inputs remain UNKNOWN. A new simula
 ledger receives every Engine.decide round; all returned intents remain local
 proposals and are never replayed/submitted. Real lp-v2 occupation is known zero
 because this read-only process has no submission capability. Old wallet orders
-are observational only and never enter its ledger. Adapter-origin send/cancel
-counts are structurally zero. `/summary` reads the latest locked memory snapshot
+are observational only and never enter its ledger, capital, or proposals.
+`wallet_orders` reports wallet-wide `legacy_order_count`, current successful
+`as_of`, and `last_success_at`. All three start UNKNOWN. Only a complete read
+(including a complete empty result, count zero) publishes a count and current
+time. Failure, malformed data, cyclic pagination or the five-page limit yields
+UNKNOWN count/current time while retaining the last successful time. No raw
+order or account details are published.
+
+`transport_safety` reports `get_attempts`, `rejected_non_get_attempts`, `status`
+(`ok`, `violation`, or UNKNOWN), and `monitor_started_at`. The instance-local
+audit wraps final httpx default and mounted transports for direct account,
+region and metadata reads and all four PublicClient transports (Gamma, Data,
+RFQ and CLOB). GET attempts count dispatches, including failed attempts; every
+non-GET is rejected before outbound dispatch. The violation persists even when
+a read catches the rejection. This also rejects PublicClient's POST-based
+batch-book read; the adapter uses individual GET book reads. Existing `safety`
+retains exactly `orders_sent`, `cancels_sent`, and `since`; counts derive from
+audited dispatches, with rejected requests excluded. Incompatible or missing
+instrumentation disables adapter reads and reports UNKNOWN counts/status rather
+than measured zero. Pinned SDK/httpx private wiring is isolated in the audit
+module because PublicClient has no transport constructor argument.
+`monitor_started_at` is the actual adapter/audit lifetime start; the caller's
+`safety.since` is separate run metadata, never evidence of earlier monitoring
+or a completed 24-hour observation.
+
+`/summary` reads the latest locked memory snapshot
 without contacting the exchange. Observed run/region/wallet identity is published
 before waiting for the market catalog, so health checks remain immediate while
 initial decisions/scores still show UNKNOWN. Region identity is not proof of

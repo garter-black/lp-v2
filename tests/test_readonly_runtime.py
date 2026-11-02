@@ -20,6 +20,11 @@ class ScriptedReads:
         self.calls.append(('wallet',now))
         return dict(available_usdc='UNKNOWN',as_of=None) if self.fail else dict(available_usdc='182.4',as_of=now)
     def read_region(self): return 'ok'
+    def read_orders(self, now):
+        return dict(legacy_order_count='UNKNOWN', as_of=None)
+    def transport_safety(self):
+        return dict(get_attempts='UNKNOWN', rejected_non_get_attempts='UNKNOWN',
+                    status='UNKNOWN', monitor_started_at='UNKNOWN')
     def wallet_tail(self): return 'a3F9'
     def safety(self,since): return dict(orders_sent=0,cancels_sent=0,since=since)
     def __getattr__(self,name):

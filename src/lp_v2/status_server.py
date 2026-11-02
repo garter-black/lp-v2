@@ -100,7 +100,7 @@ M4_FIELDS = ('lp_yield_pct_per_day', 'reward_today', 'rebate_today', 'reward_sha
 
 
 def build_summary(config, capital, *, as_of=None, run=None, freshness=None,
-                  wallet=None, safety=None, markets=()):
+                  wallet=None, wallet_orders=None, safety=None, transport_safety=None, markets=()):
     """Serialize supplied facts without reading clocks, I/O, or mutating inputs."""
     from copy import deepcopy
     from datetime import datetime
@@ -114,6 +114,8 @@ def build_summary(config, capital, *, as_of=None, run=None, freshness=None,
             return str(v)
         return v
     run, freshness, wallet, safety = run or {}, freshness or {}, wallet or {}, safety or {}
+    wallet_orders = wallet_orders or {}
+    transport_safety = transport_safety or {}
     rows = []
     reserve = Decimal('0')
     for market in markets:
@@ -133,5 +135,9 @@ def build_summary(config, capital, *, as_of=None, run=None, freshness=None,
                          capital_usdc=str(config.capital_usdc)),
                 freshness={key: value(freshness.get(key)) for key in ('decision_as_of', 'scores_as_of', 'wallet_as_of')},
                 wallet=dict(available_usdc=value(wallet.get('available_usdc'))),
+                wallet_orders={key: value(wallet_orders.get(key)) for key in
+                               ('legacy_order_count', 'as_of', 'last_success_at')},
+                transport_safety={key: value(transport_safety.get(key)) for key in
+                                  ('get_attempts', 'rejected_non_get_attempts', 'status', 'monitor_started_at')},
                 capital={**{key: str(v) for key, v in asdict(capital).items()}, 'proposed_reserve': str(reserve)},
                 safety={key: value(safety.get(key)) for key in ('orders_sent', 'cancels_sent', 'since')}, markets=rows)

@@ -26,11 +26,14 @@ class ReadOnlyRunner:
         self.__proposals = {}
         self.__engine = Engine(Ledger("lp-v2:simulation", config.capital_usdc))
         self.__wallet = {}
+        self.__wallet_orders = {}
         self.__snapshot = self.__build(None)
 
     def __build(self, now):
         return build_summary(self.config, self.__zero, as_of=now, run=self.__run,
                              freshness=self.__freshness, wallet=self.__wallet,
+                             wallet_orders=self.__wallet_orders,
+                             transport_safety=self.sdk.transport_safety(),
                              safety=self.sdk.safety(self.config.started_at), markets=self.__rows)
 
     def snapshot(self):
@@ -52,6 +55,14 @@ class ReadOnlyRunner:
                 self.__wallet = dict(available_usdc=UNKNOWN, as_of=None)
             if self.__wallet.get('as_of') is not None:
                 self.__freshness['wallet_as_of'] = self.__wallet['as_of']
+            try:
+                orders = self.sdk.read_orders(now)
+                count = orders['legacy_order_count']
+                if type(count) is not int or count < 0 or orders['as_of'] != now:
+                    raise ValueError('orders unavailable')
+                self.__wallet_orders.update(legacy_order_count=count, as_of=now, last_success_at=now)
+            except Exception:
+                self.__wallet_orders.update(legacy_order_count=UNKNOWN, as_of=None)
         score_at = self.__freshness.get('scores_as_of')
         score_due = score_at is None or (now - score_at).total_seconds() >= 600
         if not due('decision', 10):
