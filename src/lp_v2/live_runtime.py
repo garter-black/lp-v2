@@ -218,8 +218,8 @@ class LiveRunner:
         self._valuation_at = now if inventory_pnl is not None else None
         return metrics
 
-    def _cancel_owned(self, elapsed, attempted, *, at=None):
-        for oid in self.sdk.known_open_order_ids():
+    def _cancel_owned(self, elapsed, attempted, *, at=None, active=()):
+        for oid in sorted(set(self.sdk.known_open_order_ids()) | set(active)):
             if elapsed-attempted.get(oid,float('-inf')) < 5:
                 continue
             attempted[oid]=elapsed
@@ -241,21 +241,29 @@ class LiveRunner:
             with self.sdk.read_cycle(now=self.clock()):
                 # Cancellation of proven own ids must not depend on healthy read endpoints.
                 self._cancel_owned(monotonic(),attempted)
+                owned = set(self.sdk.known_order_ids())
+                active, opens_verified = set(), False
                 try:
-                    self.ledger.reconcile(self.sdk)
-                    reconciled = True
-                    self._accounting_at = self.clock()
-                    state = self.ledger.snapshot()
-                    owned = {o.order_id for o in state.orders}
-                    active = set()
                     for page in self.sdk.client.list_open_orders():
                         for order in page.items:
                             if not isinstance(order.id,str) or not order.id:
                                 raise ValueError('incomplete open order readback')
                             if order.id in owned:
                                 active.add(order.id)
+                    opens_verified = True
+                except Exception:
+                    pass
+                # Current own presence overrides stale terminal history, even if other reads fail.
+                self._cancel_owned(monotonic(),attempted,active=active)
+                try:
+                    self.ledger.reconcile(self.sdk)
+                    if not opens_verified:
+                        raise ValueError('incomplete open order readback')
+                    reconciled = True
+                    self._accounting_at = self.clock()
+                    state = self.ledger.snapshot()
                     possible = {o.order_id for o in state.orders if not o.authoritative or o.status == OrderStatus.LIVE}
-                    self._cancel_owned(monotonic(),attempted)
+                    self._cancel_owned(monotonic(),attempted,active=active)
                     if not active and not possible and not state.pending:
                         code = 0
                         break

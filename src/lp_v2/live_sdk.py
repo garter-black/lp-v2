@@ -162,10 +162,14 @@ class LiveSDK:
                          sum((f.quantity for _,f in self.journal.events('fill') if f.order_id == oid),D('0')))
             if filled < proven or any(f.trade_id not in trades for f in recorded):
                 raise ValueError('complete trade history has not caught up')
-            order = Order(oid,previous.request,filled,D('0'),
-                OrderStatus.FILLED if filled == previous.request.quote.quantity else OrderStatus.CANCELLED,
-                self._now(),True,cancels.get(oid))
-            return OrderResult(previous.request,Outcome.SUCCESS,order,self._now())
+            quantity = previous.request.quote.quantity
+            cancel_at = cancels.get(oid) or (previous.order.cancel_requested_at if previous.order else None)
+            terminal = (cancel_at is not None or self._now() >= previous.request.expires_at+timedelta(seconds=120)
+                        or filled == quantity)
+            status = (OrderStatus.FILLED if filled == quantity else OrderStatus.CANCELLED) if terminal else OrderStatus.LIVE
+            order = Order(oid,previous.request,filled,D('0') if terminal else quantity-filled,
+                          status,self._now(),terminal,cancel_at)
+            return OrderResult(previous.request,Outcome.SUCCESS if terminal else Outcome.UNKNOWN,order,self._now())
         if len(candidates) == 2 and self._now() >= previous.request.expires_at+timedelta(seconds=120):
             return OrderResult(previous.request,Outcome.FAILED,None,self._now())
         return previous
@@ -212,6 +216,9 @@ class LiveSDK:
     def orders_verified(self):
         return all((r.outcome == Outcome.FAILED and r.order is None)
                    or (r.order is not None and r.order.authoritative) for r in self._history().values())
+
+    def known_order_ids(self):
+        return tuple(sorted(r.order.order_id for r in self._history().values() if r.order is not None))
 
     def known_open_order_ids(self):
         """Durable ownership only; this read never depends on exchange availability."""

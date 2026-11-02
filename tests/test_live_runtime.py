@@ -517,3 +517,93 @@ def test_missing_cancelled_history_drain_succeeds(tmp_path,quantity):
     assert sum((p['quantity'] for p in stop['inventory']),D('0')) == D(quantity)
     assert ex.orders['foreign'].status == 'LIVE'
     assert all(c.kwargs['order_id'] != 'foreign' for c in ex.sdk.cancel_order.call_args_list)
+
+
+def test_temporary_order_index_gap_keeps_capital_reserved(tmp_path):
+    from polymarket.errors import RequestRejectedError
+    runner,ex,live,journal,obs = world(tmp_path)
+    runner.step(AT)
+    original = tuple(p['request'] for _,p in journal.events('intent'))
+    ex.orders['foreign'] = ex.orders['order-1'].model_copy(update={'id':'foreign','maker_address':'0x'+'9'*40})
+    get = ex.sdk.get_order.side_effect
+    opens = ex.sdk.list_open_orders.side_effect
+    def gap(*,order_id):
+        if order_id == 'order-1':
+            raise RequestRejectedError('synthetic-secret-never-log',status=404)
+        return get(order_id=order_id)
+    ex.sdk.get_order.side_effect = gap
+    ex.sdk.list_open_orders.side_effect = lambda **kw: (SimpleNamespace(items=tuple(o for oid,o in ex.orders.items() if oid != 'order-1')),)
+    ex.cancel_unknown = True
+    summary = runner.step(AT+timedelta(seconds=10))
+    assert summary['accounting']['status'] == 'UNKNOWN'
+    assert len(ex.posts) == 2 and runner.ledger.snapshot().capital.total == D('10')
+    assert runner.ledger.snapshot().requests == original
+    assert all(ex.orders[oid].status == 'LIVE' for oid in ('order-1','order-2'))
+    assert not any(r.order and r.order.authoritative and r.order.status != 'live'
+                   for _,r in journal.events('order_result'))
+    ex.sdk.get_order.side_effect,ex.sdk.list_open_orders.side_effect = get,opens
+    ex.cancel_unknown = False
+    restored = runner.step(AT+timedelta(seconds=20))
+    assert restored['accounting']['status'] == 'SUCCESS'
+    assert len(ex.posts) == 2 and runner.ledger.snapshot().capital.total == D('10')
+    assert all(o.authoritative and o.status == 'live' for o in runner.ledger.snapshot().orders)
+    assert all(c.kwargs['order_id'] != 'foreign' for c in ex.sdk.cancel_order.call_args_list)
+    assert ex.orders['foreign'].status == 'LIVE' and 'synthetic-secret-never-log' not in str(journal.events())
+
+
+@pytest.mark.parametrize('mode',['success','transient','persistent','failed-trades','failed-positions','failed-balance'])
+def test_drain_cancels_owned_active_despite_terminal_history(tmp_path,mode):
+    runner,ex,live,journal,obs = world(tmp_path)
+    runner.step(AT)
+    actual = ex.orders['order-1']
+    for oid in tuple(ex.orders):
+        ex.terminal(oid)
+    runner.ledger.reconcile(live)
+    assert all(o.authoritative and o.status == 'cancelled' for o in runner.ledger.snapshot().orders)
+    assert live.known_open_order_ids() == ()
+    ex.orders['order-1'] = actual
+    ex.orders['foreign'] = actual.model_copy(update={'id':'foreign','maker_address':'0x'+'9'*40})
+    tick,calls,reads = [0],[],[]
+    runner.clock = lambda: AT+timedelta(seconds=tick[0])
+    def opened(**kw):
+        rows = tuple(o for o in ex.orders.values() if o.status == 'LIVE')
+        reads.append((tick[0],tuple(o.id for o in rows)))
+        return (SimpleNamespace(items=rows),)
+    ex.sdk.list_open_orders.side_effect = opened
+    def cancel(*,order_id):
+        calls.append((order_id,tick[0]))
+        if mode == 'persistent' or (mode == 'transient' and len(calls) == 1):
+            raise TimeoutError('synthetic-secret-never-log')
+        return ex.cancel(order_id=order_id)
+    ex.sdk.cancel_order.side_effect = cancel
+    if mode == 'failed-trades':
+        ex.sdk.list_account_trades.side_effect = TimeoutError('synthetic-secret-never-log')
+    elif mode in ('failed-positions','failed-balance'):
+        original = ex.sdk.get_balance_allowance.side_effect
+        def balance(**kw):
+            if (kw['asset_type'] == 'CONDITIONAL') == (mode == 'failed-positions'):
+                raise TimeoutError('synthetic-secret-never-log')
+            return original(**kw)
+        ex.sdk.get_balance_allowance.side_effect = balance
+    def wait(seconds):
+        tick[0] += seconds
+        assert tick[0] <= 12
+    result = runner.drain(timeout_s=11,monotonic=lambda:tick[0],wait=wait)
+    assert calls and calls[0] == ('order-1',0)
+    assert all(oid == 'order-1' for oid,_ in calls)
+    assert ex.orders['foreign'].status == 'LIVE'
+    if mode in ('success','transient'):
+        assert result == 0 and ex.orders['order-1'].status == 'CANCELED'
+        assert [at for _,at in calls] == ([0] if mode == 'success' else [0,5])
+        assert 'order-1' not in reads[-1][1] and len(reads) >= 2
+        assert all(o.authoritative and o.status != 'live' for o in runner.ledger.snapshot().orders)
+    else:
+        assert result == 1
+        assert journal.events('stop_result')[-1][1]['exit_code'] == 1
+        if mode == 'persistent':
+            assert [at for _,at in calls] == [0,5,10]
+            assert ex.orders['order-1'].status == 'LIVE'
+        else:
+            assert ex.orders['order-1'].status == 'CANCELED'
+            assert journal.events('stop_result')[-1][1]['reconciliation'] == 'UNKNOWN'
+    assert 'synthetic-secret-never-log' not in str(journal.events())

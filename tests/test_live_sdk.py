@@ -615,6 +615,12 @@ def test_unresolved_signed_hash_claims_trades(tmp_path,mode):
         assert live.read_orders()[0].outcome == Outcome.UNKNOWN
         return
     assert len(fills) == 1 and fills[0].order_id == ids[0] and fills[0].quantity == D('2')
+    early = Ledger(OWNER,D('100'))
+    early.reconcile(live)
+    assert early.snapshot().orders[0].filled_quantity == D('2')
+    assert not early.snapshot().orders[0].authoritative and early.snapshot().orders[0].remaining_quantity == D('8')
+    assert early.snapshot().capital.total == D('10')
+    ex.now = request().expires_at+timedelta(seconds=120)
     ledger = Ledger(OWNER,D('100'))
     ledger.reconcile(live)
     state = ledger.snapshot()
@@ -648,8 +654,12 @@ def test_missing_history_uses_open_orders_and_trades(tmp_path,state,quantity):
     live.place_order(replace(request(),request_id='opposite',quote=Quote(CID,'102',D('.5'),D('10'))),at=AT)
     if D(quantity):
         ex.fill(oid,quantity,'.40')
-    if state != 'live':
+    if state == 'cancelled':
+        live.cancel_order(oid,at=ex.now)
+    elif state != 'live':
         ex.terminal(oid)
+    if state == 'expired':
+        live.clock = lambda: request().expires_at+timedelta(seconds=120)
     foreign = ex.orders[oid].model_copy(update={'id':'foreign','maker_address':SIGNER,'status':'LIVE'})
     ex.orders['foreign'] = foreign
     ex.sdk.get_order.side_effect = RequestRejectedError('synthetic secret',status=404)
@@ -675,7 +685,8 @@ def test_missing_history_uses_open_orders_and_trades(tmp_path,state,quantity):
     assert ledger.snapshot() == snapshot
     with pytest.raises(ValueError):
         live.cancel_order('foreign',at=AT)
-    assert ex.sdk.cancel_order.call_count == 0 and len(ex.posts) == 2
+    assert ex.sdk.cancel_order.call_count == (1 if state == 'cancelled' else 0) and len(ex.posts) == 2
+    assert all(c.kwargs['order_id'] != 'foreign' for c in ex.sdk.cancel_order.call_args_list)
     assert 'synthetic secret' not in str(journal.events())
 
 
@@ -772,3 +783,84 @@ def test_cancel_invalidates_current_cycle_readback(tmp_path,mode):
     ledger.reconcile(live)
     assert ledger.snapshot() == state and state.positions[0].quantity == D('2')
     assert len(state.fills) == 1 and 'synthetic secret' not in str(journal.events())
+
+
+@pytest.mark.parametrize('quantity',['0','2'])
+def test_missing_unexpired_order_keeps_reservation(tmp_path,quantity):
+    from types import SimpleNamespace
+    from polymarket.errors import RequestRejectedError
+    from tests.fakes.live_exchange import Exchange
+    from lp_v2.ledger import Ledger
+    ex = Exchange()
+    live,journal = adapter(tmp_path,ex.sdk)
+    oid = live.place_order(request(),at=AT).order.order_id
+    ex.reject_tokens.add('102')
+    live.place_order(replace(request(),request_id='opposite',quote=Quote(CID,'102',D('.5'),D('10'))),at=AT)
+    if D(quantity):
+        ex.fill(oid,quantity,'.4')
+    ledger = Ledger(OWNER,D('100'))
+    ledger.reconcile(live)
+    get = ex.sdk.get_order.side_effect
+    opens = ex.sdk.list_open_orders.side_effect
+    ex.sdk.get_order.side_effect = RequestRejectedError('synthetic-secret-never-log',status=404)
+    ex.sdk.list_open_orders.side_effect = lambda **kw: (SimpleNamespace(items=()),)
+    with live.read_cycle(now=AT+timedelta(seconds=10)):
+        fact = live.read_orders()[0]
+        assert not fact.authoritative and fact.status == 'live'
+        assert fact.filled_quantity == D(quantity) and fact.remaining_quantity == D('10')-D(quantity)
+        assert not live.orders_verified() and live.known_open_order_ids() == (oid,)
+        ledger.reconcile(live)
+        assert ledger.snapshot().capital.total == D('10')
+        assert ledger.snapshot().capital.inventory_cost == D(quantity)*D('.4')
+    assert ex.orders[oid].status == 'LIVE'
+    assert not any(r.order and r.order.authoritative and r.order.status != 'live'
+                   for _,r in journal.events('order_result'))
+    count = ex.sdk.post_order.call_count
+    assert live.place_order(request(),at=AT).outcome == Outcome.UNKNOWN
+    assert ex.sdk.post_order.call_count == count
+    ex.sdk.get_order.side_effect,ex.sdk.list_open_orders.side_effect = get,opens
+    with live.read_cycle(now=AT+timedelta(seconds=20)):
+        fact = live.read_orders()[0]
+        assert fact.authoritative and fact.order_id == oid and fact.request == request()
+        assert fact.status == 'live' and fact.filled_quantity == D(quantity)
+        ledger.reconcile(live)
+    assert ledger.snapshot().capital.total == D('10')
+    assert len(ledger.snapshot().fills) == (1 if D(quantity) else 0)
+    assert 'synthetic-secret-never-log' not in str(journal.events())
+
+
+@pytest.mark.parametrize('reason,quantity', [('cancel','2'),('before-buffer','2'),('expired','2'),('full','10')])
+def test_missing_history_terminal_requires_reason(tmp_path,reason,quantity):
+    from polymarket.errors import RequestRejectedError
+    from tests.fakes.live_exchange import Exchange
+    from lp_v2.ledger import Ledger
+    ex = Exchange()
+    live,journal = adapter(tmp_path,ex.sdk)
+    live.clock = lambda: ex.now
+    oid = live.place_order(request(),at=AT).order.order_id
+    ex.reject_tokens.add('102')
+    live.place_order(replace(request(),request_id='opposite',quote=Quote(CID,'102',D('.5'),D('10'))),at=AT)
+    ex.fill(oid,quantity,'.4')
+    if quantity != '10':
+        live.read_orders()
+    if reason == 'cancel':
+        live.cancel_order(oid,at=ex.now)
+    else:
+        ex.terminal(oid)
+    if reason in ('before-buffer','expired'):
+        ex.now = request().expires_at+timedelta(seconds=119 if reason == 'before-buffer' else 120)
+    ex.sdk.get_order.side_effect = RequestRejectedError('synthetic-secret-never-log',status=404)
+    fact = live.read_orders()[0]
+    assert fact.order_id == oid and fact.request == request() and fact.filled_quantity == D(quantity)
+    assert fact.authoritative is (reason != 'before-buffer')
+    assert fact.status == ('live' if reason == 'before-buffer' else 'filled' if reason == 'full' else 'cancelled')
+    assert fact.remaining_quantity == (D('8') if reason == 'before-buffer' else 0)
+    ledger = Ledger(OWNER,D('100'))
+    ledger.reconcile(live)
+    state = ledger.snapshot()
+    assert state.cash == D('100')-D(quantity)*D('.4')
+    assert state.positions[0].quantity == D(quantity) and state.positions[0].cost_usdc == D(quantity)*D('.4')
+    assert state.capital.total == (D('10') if reason == 'before-buffer' else D(quantity))
+    assert len(state.fills) == 1 and len(ex.posts) == 2
+    assert not any(r.outcome == Outcome.FAILED for _,r in journal.events('order_result') if r.request == request())
+    assert 'synthetic-secret-never-log' not in str(journal.events())
