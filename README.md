@@ -75,6 +75,24 @@ The [live unit](deploy/lp-v2-live.service) and [launcher](deploy/run-live) are d
 they provision nothing and do not replace the read-only deployment path.
 No deployment, live operation, key provisioning or field acceptance is claimed.
 
+## Live-control wrapper
+
+The new `lp-v2 live profile show tokyo` and `lp-v2 live check` consume an existing
+v1 default profile. Setup and edits save local expectations; on/off add explicit
+confirmation, same-run readback and owned drain around the existing executor.
+See the [live-control operator guide](docs/operations/live-control.md) for commands,
+installation prerequisites, recovery and concrete required startup proofs.
+Actual submitted/confirmed merge remains separately NOT_RUN runtime acceptance.
+These offline capabilities do not claim deployment or target readiness.
+
 Do not place trades or deploy until Ray explicitly authorizes each milestone.
 
 【LLM：Codex@Air｜模型=gpt-6-astra｜effort=xhigh｜fast=否】
+
+The live controller binds the installed launcher/unit and actual process arguments
+to the checked private-file references and full derived account identity. Its
+pre-switch handoff requires an inactive/disabled known legacy service, no alternate
+local live executor, zero open orders and exact selected-token inventory proof
+(including explicit two-token zero balances for new state). Incomplete evidence
+blocks startup; this covers one host and selected market, not distributed wallet
+exclusivity. See the [operator guide](docs/operations/live-control.md).

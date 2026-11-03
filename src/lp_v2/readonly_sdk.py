@@ -172,7 +172,7 @@ class ReadOnlySDK:
         self.__audit.require_ready()
         import base64, hashlib, hmac, re
         c = self.__credentials
-        if (path not in ('/balance-allowance', '/data/orders') or c is None
+        if (path not in ('/balance-allowance', '/data/orders', '/auth/ban-status/closed-only') or c is None
                 or not all(isinstance(v, str) and v for v in (c.key, c.secret, c.passphrase))
                 or not all(re.fullmatch('0x[0-9a-fA-F]{40}', v) for v in (c.signer_address, c.wallet_address))
                 or type(c.signature_type) is not int or c.signature_type not in (0, 1, 2)):
@@ -253,6 +253,103 @@ class ReadOnlySDK:
         if not isinstance(raw,dict):
             raise ValueError('region identity unavailable')
         return dict(blocked=raw.get('blocked'),country=raw.get('country'))
+
+
+    def read_conditional_inventory(self, now, condition_id):
+        """Fresh selected-market quantities, from verified tokens and authenticated GETs."""
+        from decimal import Decimal
+        from polymarket.models.clob.account import BalanceAllowance
+        if self.__credentials is None or type(self.__credentials.signature_type) is not int or self.__credentials.signature_type!=1:
+            raise ValueError('conditional identity unavailable')
+        rows=self.read_fixed_market(now,condition_id)
+        tokens=tuple(token.token_id for token in rows[0]['plan'].market.tokens)
+        if len(tokens)!=2 or len(set(tokens))!=2 or not all(isinstance(t,str) and t.isdecimal() for t in tokens):
+            raise ValueError('conditional tokens unavailable')
+        quantities={}
+        for token in tokens:
+            raw=self.__account_get('/balance-allowance',now,dict(asset_type='CONDITIONAL',token_id=token,signature_type='1'))
+            data=BalanceAllowance.model_validate(raw)
+            if data.balance<0 or any(value<0 for value in data.allowances.values()):raise ValueError('conditional balance invalid')
+            quantities[token]=Decimal(data.balance)/Decimal('1000000')
+        return dict(condition_id=condition_id,token_ids=tokens,quantities=quantities,as_of=now.isoformat())
+
+    def read_account_readiness(self, now, *, capital_usdc, identity, relayer):
+        """Authenticated GET facts only. Authentication never proves a merge."""
+        from decimal import Decimal
+        from polymarket.environments import PRODUCTION
+        from polymarket.models.clob.account import BalanceAllowance
+        def fact(status,reason):
+            return dict(status=status,reason=reason,as_of=now.isoformat())
+        result={name:fact('UNKNOWN','ACCOUNT_EVIDENCE_MISSING') for name in
+                ('balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge','proxy_execution')}
+        c=self.__credentials
+        if (c is None or c.signer_address.lower()!=identity['signer_address'].lower()
+                or c.wallet_address.lower()!=identity['wallet_address'].lower()
+                or type(c.signature_type) is not int or c.signature_type!=1):
+            return result
+        try:
+            from importlib.metadata import version
+            from polymarket._internal.wallet import classify_wallet_type
+            supported=(version('polymarket-client')=='0.2.0' and PRODUCTION.chain_id==137
+                and PRODUCTION.relayer_url=='https://relayer-v2.polymarket.com'
+                and classify_wallet_type(signer=c.signer_address,wallet=c.wallet_address,
+                    config=PRODUCTION.wallet_derivation)=='POLY_PROXY')
+            result['proxy_execution']=fact('PASS' if supported else 'FAIL','PINNED_PROXY_EXECUTION_CONFIGURATION')
+        except Exception:
+            pass
+        try:
+            raw=self.__account_get('/balance-allowance',now,dict(asset_type='COLLATERAL',signature_type='1'))
+            data=BalanceAllowance.model_validate(raw)
+            required=Decimal(capital_usdc)*1000000
+            if data.balance<0 or any(value<0 for value in data.allowances.values()):
+                raise ValueError()
+            result['balance']=fact('PASS' if data.balance>=required else 'FAIL','BALANCE_CAPITAL')
+            allowances={key.lower():value for key,value in data.allowances.items()}
+            spenders=(PRODUCTION.standard_exchange,PRODUCTION.neg_risk_exchange)
+            if all(key.lower() in allowances for key in spenders):
+                result['allowance']=fact('PASS' if all(allowances[k.lower()]>=required for k in spenders) else 'FAIL','EXPLICIT_ALLOWANCE')
+        except Exception:
+            pass
+        closed=None
+        try:
+            raw=self.__account_get('/auth/ban-status/closed-only',now,{})
+            closed=raw.get('closed_only')
+            if type(closed) is bool:
+                result['closed_only']=fact('PASS' if closed is False else 'FAIL','CLOSED_ONLY')
+        except Exception:
+            pass
+        orders=self.read_orders(now)
+        count=orders['legacy_order_count']
+        if type(count) is int:
+            result['legacy_orders']=fact('PASS' if count==0 else 'FAIL','EXTERNAL_ORDERS_REQUIRE_HANDOFF')
+        try:
+            region=self.read_region_policy()
+            allowed=region['blocked'] is False or (region['blocked'] is True and region['country']=='JP' and closed is False)
+            if type(region['blocked']) is bool:
+                result['region']=fact('PASS' if allowed else 'FAIL','JP_CLOSED_ONLY_EXCEPTION' if region['blocked'] is True and allowed else 'REGION_POLICY')
+        except Exception:
+            pass
+        try:
+            if (not isinstance(relayer,dict) or set(relayer)!={'key','address'} or not isinstance(relayer['key'],str)
+                    or not relayer['key'] or relayer['address'].lower()!=identity['signer_address'].lower()):
+                result['relayer_auth']=fact('FAIL','RELAYER_IDENTITY'); return result
+            self.__audit.require_ready()
+            response=self.__http.get(PRODUCTION.relayer_url+'/transactions',headers={
+                'RELAYER_API_KEY':relayer['key'],'RELAYER_API_KEY_ADDRESS':relayer['address']})
+            if response.status_code in (401,403):
+                result['relayer_auth']=fact('FAIL','RELAYER_AUTH_REJECTED')
+            else:
+                response.raise_for_status()
+                rows=response.json()
+                if not isinstance(rows,list) or any(not isinstance(row,dict) or
+                        not isinstance(row.get('owner'),str) or row['owner'].lower()!=identity['signer_address'].lower()
+                        for row in rows):
+                    raise ValueError()
+                result['relayer_auth']=fact('PASS','AUTHENTICATED_GET_ONLY')
+        except Exception:
+            pass
+        result['relayer_merge']=fact('UNKNOWN','AUTH_DOES_NOT_PROVE_MERGE_READINESS')
+        return result
 
     def public_preflight(self, now, condition_id):
         from lp_v2.preflight import check_market
