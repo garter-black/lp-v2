@@ -211,7 +211,11 @@ class LiveSDK:
                     result = previous
             if result is previous and previous.order is not None:
                 result = OrderResult(previous.request,Outcome.UNKNOWN,replace(previous.order,authoritative=False),previous.observed_at)
-            if result != previous:
+            # Observation freshness is returned, while the journal records fact transitions.
+            comparable = replace(result,observed_at=previous.observed_at,
+                order=replace(result.order,observed_at=previous.order.observed_at)
+                if result.order is not None and previous.order is not None else result.order)
+            if comparable != previous:
                 self.journal.append('order_result',result)
                 if result.outcome == Outcome.FAILED and result.order is None:
                     reason = '到期未见'
@@ -221,7 +225,7 @@ class LiveSDK:
                     reason = None
                 if reason:
                     self.journal.append('diagnostic',dict(request_id=key,reason=reason,at=self._now()))
-                results[key] = result
+            results[key] = result
         return tuple(r.order if r.order else r for r in results.values())
 
     def orders_verified(self):

@@ -65,6 +65,97 @@ def multi_world(tmp_path):
     return runner,ex,sdk,journal,obs
 
 
+def test_unchanged_order_readbacks_do_not_grow_journal(tmp_path):
+    from lp_v2.models import OrderStatus
+    runner,ex,sdk,journal,obs=multi_world(tmp_path)
+    runner.step(AT)
+    requests=tuple(r.request for _,r in journal.events('order_result'))
+    assert len(requests)==6
+    for tick in range(1,22):
+        ex.now=AT+timedelta(seconds=10*tick)
+        obs.plans=tuple(replace(p,books=tuple(replace(b,observed_at=ex.now) for b in p.books)) for p in obs.plans)
+        runner.step(ex.now)
+        facts=sdk.read_orders()
+        assert len(facts)==6 and all(o.authoritative and o.observed_at==ex.now for o in facts)
+        assert len(journal.events('order_result'))==12
+    assert len(ex.posts)==6 and ex.sdk.cancel_order.call_count==0
+    assert {o.request for o in facts}==set(requests)
+    assert all(r.created_at==AT and r.expires_at==AT+timedelta(hours=1) for r in requests)
+    oid='order-1'
+    ex.now+=timedelta(seconds=10)
+    ex.fill(oid,'1','.40',at=ex.now)
+    partial=next(o for o in sdk.read_orders() if o.order_id==oid)
+    assert partial.filled_quantity==D('1') and partial.observed_at==ex.now
+    assert journal.events('order_result')[-1][1].order==partial
+    ex.now+=timedelta(seconds=10)
+    ex.orders[oid]=ex.orders[oid].model_copy(update={'status':'DELAYED'})
+    uncertain=next(o for o in sdk.read_orders() if o.order_id==oid)
+    assert not uncertain.authoritative and uncertain.observed_at==ex.now
+    assert journal.events('order_result')[-1][1].order==uncertain
+    ex.now+=timedelta(seconds=10)
+    ex.orders[oid]=ex.orders[oid].model_copy(update={'status':'LIVE'})
+    recovered=next(o for o in sdk.read_orders() if o.order_id==oid)
+    assert recovered.authoritative and recovered.observed_at==ex.now
+    assert journal.events('order_result')[-1][1].order==recovered
+    ex.now+=timedelta(seconds=10)
+    cancelled_at=ex.now
+    sdk.cancel_order(oid,at=cancelled_at)
+    ex.now+=timedelta(seconds=10)
+    terminal=next(o for o in sdk.read_orders() if o.order_id==oid)
+    assert terminal.status==OrderStatus.CANCELLED and terminal.authoritative
+    assert terminal.cancel_requested_at==cancelled_at and terminal.observed_at==ex.now
+    assert terminal.filled_quantity==D('1') and terminal.remaining_quantity==0
+    assert journal.events('order_result')[-1][1].order==terminal
+    count=len(journal.events('order_result'))
+    ex.now+=timedelta(seconds=10)
+    assert next(o for o in sdk.read_orders() if o.order_id==oid)==terminal
+    assert len(journal.events('order_result'))==count and len(ex.posts)==6
+    journal.close()
+
+
+def test_fixed_market_failure_is_isolated(tmp_path):
+    import httpx
+    from tests.test_live_runtime import Observations
+    from tests.test_live_income import earning
+    runner,ex,sdk,journal,obs=multi_world(tmp_path)
+    class FixedObservations(Observations):
+        failed=False
+        def read_fixed_market(self,now,condition_id):
+            if self.failed and condition_id==CIDS[2]:
+                raise ValueError('market excluded')
+            return [r for r in self.read_markets(now) if r['condition_id']==condition_id]
+    obs=FixedObservations(obs.plans)
+    runner.observations=obs
+    ex.sdk.list_user_earnings_for_day.return_value=(SimpleNamespace(items=tuple(earning(cid=cid) for cid in CIDS)),)
+    ex.sdk.get_reward_percentages.return_value={cid:25 for cid in CIDS}
+    ex.sdk.get_order_scoring.return_value=True
+    sdk.http=httpx.Client(transport=httpx.MockTransport(lambda req:httpx.Response(200,json=[])))
+    runner.step(AT)
+    assert len(ex.posts)==6
+    obs.failed=True
+    for tick in range(1,4):
+        ex.now=AT+timedelta(seconds=10*tick)
+        obs.plans=tuple(replace(p,books=tuple(replace(b,observed_at=ex.now) for b in p.books)) for p in obs.plans)
+        result=runner.step(ex.now)
+        active={cid:[o for o in ex.orders.values() if o.condition_id==cid and o.status=='LIVE'] for cid in CIDS}
+        assert [len(active[cid]) for cid in CIDS]==[2,2,0]
+        assert {c.kwargs['order_id'] for c in ex.sdk.cancel_order.call_args_list}=={'order-5','order-6'}
+        assert len(ex.posts)==6
+        rows={r['condition_id']:r for r in result['markets']}
+        assert not rows[CIDS[2]]['eligible'] and rows[CIDS[2]]['skip_reason']
+        for cid in CIDS[:2]:
+            assert rows[cid]['eligible']
+            assert all(D(rows[cid]['m4'][k]).is_finite() for k in ('reward_today','rebate_today','net_profit','lp_yield_pct_per_day','net_yield_pct_per_day'))
+        assert set(journal.events('occupation')[-1][1]['markets'])==set(CIDS)
+    obs.failed=False
+    ex.now+=timedelta(seconds=10)
+    obs.plans=tuple(replace(p,books=tuple(replace(b,observed_at=ex.now) for b in p.books)) for p in obs.plans)
+    recovered=runner.step(ex.now)
+    assert len(ex.posts)==8 and all(r['eligible'] for r in recovered['markets'])
+    assert [sum(o.status=='LIVE' and o.condition_id==cid for o in ex.orders.values()) for cid in CIDS]==[2,2,2]
+    sdk.http.close();journal.close()
+
+
 def test_multimarket_execution_safety(tmp_path):
     from lp_v2.models import Quote, MergeRequest, ReservationTerms
     from tests.test_live_sdk import request
@@ -513,49 +604,97 @@ def test_report_readonly_boundary(tmp_path,monkeypatch,capsys,mode):
 def test_seven_day_round_latency(tmp_path):
     import signal
     import time
-    from lp_v2.journal import encode
+    from lp_v2.journal import Journal, encode, decode
     from lp_v2.live_runtime import LiveRunner
+    from lp_v2.live_sdk import LiveSDK
+    from lp_v2.models import Quote, ReservationTerms
+    from tests.test_live_sdk import request
     runner,ex,sdk,journal,obs=multi_world(tmp_path)
     start=AT-timedelta(days=6)
-    breakdown={cid:dict(inventory_cost=D('1.8'),open_buys=D('3'),pending_requests=D('0'),hedge_reserve=D('5.2'),fee_reserve=D('0'),total=D('10'),planned_quantity=D('10'),hedges=(),uncertainty=dict(pending=(),orders=(),merges=()),title='Synthetic political market',inventory=tuple(dict(condition_id=cid,token_id=t,quantity=D('2'),cost_usdc=D('.9'),unpaired_quantity=D('0'),unpaired_cost_usdc=D('0'),mark_usdc=D('0'),mark_at=start) for t in pair)) for cid,pair in zip(CIDS,PAIRS)}
-    def data():
-        for round_no in range(60480):
-            at=start+timedelta(seconds=10*round_no)
-            yield ('occupation',encode(dict(at=at,condition_id=CID,inventory_cost=D('5.4'),open_buys=D('9'),pending_requests=D('0'),hedge_reserve=D('15.6'),fee_reserve=D('0'),total=D('30'),startup_cap=D('100'),markets=breakdown,inventory=(),uncertainty=dict(pending=(),orders=(),merges=()),reconciliation='SUCCESS',accounting_as_of=at)))
-    with journal.db:journal.db.executemany('INSERT INTO events(kind,payload) VALUES (?,?)',data())
-    count=journal.db.execute("SELECT count(*) FROM events WHERE kind='occupation'").fetchone()[0]
+    breakdown={cid:dict(inventory_cost=D('0'),open_buys=D('9.5'),pending_requests=D('0'),hedge_reserve=D('.5'),fee_reserve=D('0'),total=D('10'),planned_quantity=D('10'),hedges=(),uncertainty=dict(pending=(),orders=(),merges=()),title='Synthetic political market',inventory=()) for cid in CIDS}
+    observations=0
+    generated_at=time.perf_counter()
+    # Generate each hourly GTD generation through the real SDK/SQLite append path,
+    # then concatenate its facts. Bounded staging keeps fixture construction cheap.
+    for hour in range(168):
+        staging=Journal(':memory:')
+        source=LiveSDK(ex.sdk,staging,owner=OWNER,condition_id=CID,token_ids=TOKENS,markets=dict(zip(CIDS,PAIRS)),wallet=WALLET,signer=SIGNER,clock=lambda:ex.now)
+        created=start+timedelta(hours=hour)
+        ex.now=created
+        active=[]
+        for cid,pair in zip(CIDS,PAIRS):
+            for token,price in zip(pair,(D('.40'),D('.55'))):
+                r=replace(request(),request_id=f'hour-{hour}-{token}',quote=Quote(cid,token,price,D('10')),created_at=created,expires_at=created+timedelta(hours=1),reservation_terms=ReservationTerms(pair,D('10'),(D('0'),D('0')),hour))
+                active.append(source.place_order(r,at=created).order.order_id)
+        rows=[]
+        for tick in range(360):
+            ex.now=created+timedelta(seconds=10*tick)
+            if hour==167 and tick==180:
+                ex.fill(active[0],'1','.40',at=ex.now)
+            before=ex.sdk.get_order.call_count
+            facts=source.read_orders()
+            assert ex.sdk.get_order.call_count-before==6
+            assert len(facts)==6 and all(o.authoritative and o.observed_at==ex.now for o in facts)
+            observations+=6
+            rows.append(('occupation',encode(dict(at=ex.now,condition_id=CID,inventory_cost=D('0'),open_buys=D('28.5'),pending_requests=D('0'),hedge_reserve=D('1.5'),fee_reserve=D('0'),total=D('30'),startup_cap=D('100'),markets=breakdown,inventory=(),uncertainty=dict(pending=(),orders=(),merges=()),reconciliation='SUCCESS',accounting_as_of=ex.now))))
+            if tick%6==0:
+                rows.extend(('income',encode(dict(at=ex.now,condition_id=cid,reward_today=D('0'),rebate_today=D('0'),reward_share=D('0'),scoring={oid:True for oid in active}))) for cid in CIDS)
+        source.read_trades()
+        if hour<167:
+            ex.now=created+timedelta(seconds=3599)
+            for oid in active:source.cancel_order(oid,at=ex.now)
+            source.read_orders()
+        with journal.db:
+            journal.db.executemany('INSERT INTO events(kind,payload) VALUES (?,?)',staging.db.execute('SELECT kind,payload FROM events ORDER BY seq'))
+            journal.db.executemany('INSERT INTO events(kind,payload) VALUES (?,?)',rows)
+        staging.close()
+        ex.sdk.reset_mock()
+    generated=time.perf_counter()-generated_at
+    counts=dict(journal.db.execute('SELECT kind,count(*) FROM events GROUP BY kind'))
+    assert counts['occupation']==60480 and counts['income']==30240 and observations==362880
+    assert counts['intent']==counts['signed']==1008
+    assert counts['cancel_intent']==1002 and counts['fill']==1
+    assert counts['order_result']==4021  # 1008 accepted + 1008 authority + 1002 cancel + 1002 terminal + one fill
     size=sum(p.stat().st_size for p in tmp_path.iterdir() if p.is_file())
     now=AT+timedelta(days=1,seconds=-10)
+    assert ex.now==now
     obs.plans=tuple(replace(p,books=tuple(replace(b,observed_at=now) for b in p.books)) for p in obs.plans)
     traced=[];journal.db.set_trace_callback(traced.append)
     old=signal.getsignal(signal.SIGALRM)
-    def watchdog(*args):raise AssertionError('independent 45s watchdog expired')
+    def watchdog(*args):raise AssertionError('independent real-time watchdog expired')
     signal.signal(signal.SIGALRM,watchdog);signal.setitimer(signal.ITIMER_REAL,45)
     try:
         tick=time.perf_counter();result=runner.step(now);elapsed=time.perf_counter()-tick
     finally:signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,old)
-    print(f'M5 latency: {elapsed:.6f}s; {count} rounds; 7 days x 3 market breakdowns; cadence 10s; dataset {size} bytes')
-    assert count==60480 and elapsed<=5
+    print(f'M5 latency: {elapsed:.6f}s; generation {generated:.3f}s; 60480 rounds; {observations} live readbacks; counts {counts}; dataset {size} bytes',flush=True)
+    assert elapsed<=5
     production_traced=traced.copy()
-    from lp_v2.journal import decode
     audit=decode(journal.db.execute("SELECT payload FROM events WHERE kind='occupation' ORDER BY seq DESC LIMIT 1").fetchone()[0])
-    assert audit['total']<=100 and set(audit['markets'])==set(CIDS)
+    assert audit['reconciliation']=='SUCCESS' and audit['total']<=100 and set(audit['markets'])==set(CIDS)
     assert {r['condition_id'] for r in result['markets']}==set(CIDS)
     occupation_reads=[sql for sql in production_traced if sql.startswith('SELECT kind,payload') and "'occupation'" in sql]
     assert occupation_reads and all('seq>=' in sql for sql in occupation_reads),occupation_reads
-    # Restart and UTC rollover must establish the correct new bound without a stale fact cache.
+    # Restart and UTC rollover establish the correct bound, without a stale fact cache.
     for at in (now,AT+timedelta(days=1)):
-        traced.clear()
-        r=LiveRunner(runner.config,sdk,obs,clock=lambda:at)
+        traced.clear();ex.now=at
+        r=LiveRunner(runner.config,sdk,obs,clock=lambda:ex.now)
         obs.plans=tuple(replace(p,books=tuple(replace(b,observed_at=at) for b in p.books)) for p in obs.plans)
         r.step(at)
         reads=[sql for sql in traced if sql.startswith('SELECT kind,payload') and "'occupation'" in sql]
-        assert all('seq>=' in sql for sql in reads)
+        assert reads and all('seq>=' in sql for sql in reads)
         if at.date()!=now.date():
             import re
-            assert all(int(re.search(r'seq>=(\d+)',sql).group(1))>=60481 for sql in reads),reads
+            assert all(int(re.search(r'seq>=(\d+)',sql).group(1))>60480 for sql in reads),reads
+    signal.signal(signal.SIGALRM,watchdog);signal.setitimer(signal.ITIMER_REAL,90)
+    try:
+        tick=time.perf_counter();code=r.drain(timeout_s=90);drained=time.perf_counter()-tick
+    finally:signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,old)
+    print(f'M5 drain: {drained:.6f}s; exit {code}',flush=True)
+    assert drained<=90 and code==0
+    assert not sdk.known_open_order_ids() and not any(o.status=='LIVE' for o in ex.orders.values())
+    stopped=journal.events('stop_result')[-1][1]
+    assert stopped['exit_code']==0 and stopped['reconciliation']=='SUCCESS' and not stopped['pending']
     journal.close()
-
 
 @pytest.mark.parametrize('status,authoritative,resolved',[
     ('live',True,False),('cancelled',False,False),('cancelled',True,True),('filled',True,True),

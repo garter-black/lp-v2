@@ -75,10 +75,23 @@ class LiveRunner:
                 if not reconciled:
                     raise ValueError('owned order readback remains uncertain')
                 self._accounting_at = now
-                self._rows = [r for r in (
-                    [r for cid in self._markets for r in self.observations.read_fixed_market(now,cid)]
-                    if hasattr(self.observations,'read_fixed_market') else self.observations.read_markets(now))
-                    if r['condition_id'] in self._markets]
+                if hasattr(self.observations,'read_fixed_market'):
+                    rows, unavailable = [], set()
+                    for cid in self._markets:
+                        try:
+                            current = self.observations.read_fixed_market(now,cid)
+                        except Exception:
+                            unavailable.add(cid)
+                            current = [dict(condition_id=cid,title=next((r['title'] for r in self._rows if r['condition_id']==cid),UNKNOWN),
+                                eligible=False,skip_reason='市场读回不可用，暂停下单')]
+                            self.sdk.journal.append('diagnostic',dict(at=now,condition_id=cid,reason='market readback unavailable'))
+                        rows.extend(current)
+                    self._rows = [r for r in rows if r['condition_id'] in self._markets]
+                    for order in self.ledger.snapshot().orders:
+                        if order.request.quote.condition_id in unavailable and (not order.authoritative or order.status.value=='live'):
+                            self.ledger.apply_order(self.sdk.cancel_order(order.order_id,at=now))
+                else:
+                    self._rows = [r for r in self.observations.read_markets(now) if r['condition_id'] in self._markets]
                 plans = tuple(r['plan'] for r in self._rows if r.get('plan') is not None)
                 self._last_plans = plans
                 if any(tuple(t.token_id for t in p.market.tokens) != self._markets.get(p.market.condition_id) for p in plans):
