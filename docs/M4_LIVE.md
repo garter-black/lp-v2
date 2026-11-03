@@ -213,3 +213,13 @@ CLI 单列 NOT_RUN/UNKNOWN。缺少任何必需启动证据仍阻止开启，离
 实盘执行器、订单为零，且两个 token 的新鲜鉴权余额与完整已停止自有快照一致；新状态需
 明确双零余额。未知或不匹配不自动接管、清空或导入持仓；控制锁内再次核验后才切换。
 不声称跨主机互斥、其他市场全局库存或对抗同 UID 恶意替换的进程证明。
+
+### Opening eligibility diagnostics
+
+Public preflight exposes allowlisted `checks.opening_eligibility.details` with
+finite decimal strings for proven liquidity and executable-book midpoint, fixed
+thresholds `1000` and `0.10`–`0.90`, observation time and authored liquidity/midpoint
+blockers. Unknown source numbers are omitted; existing status/reason and all
+independent checks remain authoritative. `live check` preserves these details only
+with the matching code, market, capital and fresh observation. These diagnostics
+do not waive in-play, region, fee or authentication gates.

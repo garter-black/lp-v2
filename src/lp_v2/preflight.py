@@ -124,6 +124,18 @@ def check_market(audit, public, http, now, condition_id, metadata_validator):
                 set_check('opening_eligibility',False,'OPENING_INELIGIBLE')
         elif checks['opening_eligibility']['status']=='PASS':
             checks['opening_eligibility']=dict(status='UNKNOWN',reason_code='DEPENDENCY_UNKNOWN')
+    details=dict(minimum_liquidity='1000',minimum_midpoint='0.10',maximum_midpoint='0.90',
+                 as_of=now.isoformat(),blockers=[])
+    try:
+        liquidity=number(wire.get('liquidityNum'))
+        details['liquidity_num']=format(liquidity,'f')
+        if liquidity<1000:details['blockers'].append('LIQUIDITY_BELOW_MIN')
+    except Exception:pass
+    if checks['books']['status']=='PASS':
+        midpoint=sum(first_prices)/2
+        details['midpoint']=format(midpoint,'f')
+        if not D('.10')<=midpoint<=D('.90'):details['blockers'].append('MIDPOINT_OUTSIDE_RANGE')
+    checks['opening_eligibility']['details']=details
     return checks
 
 

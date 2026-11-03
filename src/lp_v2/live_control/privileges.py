@@ -18,7 +18,7 @@ seteuid=os.seteuid
 getgroups=os.getgroups
 setgroups=os.setgroups
 _current=ContextVar('live_control_operator',default=None)
-PROPERTIES='--property=MainPID,ActiveState,User,ExecStart,ExecStop,EnvironmentFiles,Conflicts,TimeoutStopUSec,Restart,UnitFileState,Group,WorkingDirectory,Type,UMask,NoNewPrivileges,KillSignal,ExecStartPre,ExecStartPost,ExecCondition,ExecStopPost,ExecReload,Environment,PassEnvironment,UnsetEnvironment,RootDirectory,RootImage,DynamicUser,PAMName,ExecSearchPath,SupplementaryGroups'
+PROPERTIES='--property=MainPID,ActiveState,User,ControlGroup,ExecStart,ExecStop,EnvironmentFiles,Conflicts,TimeoutStopUSec,Restart,UnitFileState,Group,WorkingDirectory,Type,UMask,NoNewPrivileges,KillSignal,ExecStartPre,ExecStartPost,ExecCondition,ExecStopPost,ExecReload,Environment,PassEnvironment,UnsetEnvironment,RootDirectory,RootImage,DynamicUser,PAMName,ExecSearchPath,SupplementaryGroups'
 
 
 class AuthorityUnavailable(ValueError):
@@ -120,3 +120,18 @@ python = release / '.venv/bin/python'
 immutable(python.resolve(strict=True))
 os.execv(str(python), [str(python), '-I', '-m', 'lp_v2.live_control.host'])
 '''
+
+
+def empty_exec_property(unit,prop):
+    """Finite unprivileged D-Bus proof for systemctl's omitted empty arrays."""
+    import json
+    objects={'lp-v2.service':'/org/freedesktop/systemd1/unit/lp_2dv2_2eservice',
+             'lp-v2-live.service':'/org/freedesktop/systemd1/unit/lp_2dv2_2dlive_2eservice'}
+    if unit not in objects or prop not in ('ExecStartPre','ExecStartPost','ExecCondition','ExecStopPost','ExecReload'):
+        raise ValueError('unsupported property')
+    result=subprocess.run(['busctl','--json=short','--system','get-property','org.freedesktop.systemd1',
+        objects[unit],'org.freedesktop.systemd1.Service',prop],text=True,capture_output=True,timeout=15,check=False,
+        env=dict(PATH='/usr/sbin:/usr/bin:/sbin:/bin',LANG='C'))
+    if result.returncode or len(result.stdout)>4096:raise ValueError('property unavailable')
+    data=json.loads(result.stdout)
+    if data!={'type':'a(sasbttttuii)','data':[]}:raise ValueError('property not proven empty')

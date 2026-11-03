@@ -227,3 +227,40 @@ def test_fixed_market_rejects_unproven_fee_policy(case):
             sdk.read_fixed_market(AT,CID)
     finally:
         sdk.close()
+
+
+def test_conditional_inventory_is_independent_of_opening_eligibility():
+    from eth_account import Account
+    from polymarket.environments import PRODUCTION
+    from polymarket._internal.wallet import derive_proxy_wallet_address
+    from lp_v2.readonly_sdk import ReadOnlySDK,L2Credentials
+    signer=Account.from_key(bytes([7])*32).address
+    creds=L2Credentials('synthetic','c2VjcmV0','synthetic',signer,derive_proxy_wallet_address(signer,PRODUCTION.wallet_derivation),1)
+    scenario={};seen=[]
+    def http(request):
+        seen.append(request)
+        assert request.method=='GET'
+        if request.url.path.startswith('/markets/'):return httpx.Response(200,json={}) # missing in_play
+        token=request.url.params['token_id']
+        assert token in ('101','102') and request.url.params['asset_type']=='CONDITIONAL'
+        assert request.headers['POLY_ADDRESS']==signer
+        return httpx.Response(scenario.get('status',200),json={'balance':scenario.get('balance','0' if token=='101' else '1234567'),'allowances':{}})
+    for wire in (market_wire(liquidityNum='825.3674'),market_wire()):
+        public,_=external_sdk([wire]);sdk=ReadOnlySDK(public=public,http=httpx.Client(transport=httpx.MockTransport(http)),credentials=creds)
+        try:
+            data=sdk.read_conditional_inventory(AT,CID)
+            assert data==dict(condition_id=CID,token_ids=('101','102'),quantities={'101':D('0'),'102':D('1.234567')},as_of=AT.isoformat())
+            for bad in (True,'NaN','-1','0.5',None):
+                scenario['balance']=bad
+                with pytest.raises(ValueError):sdk.read_conditional_inventory(AT,CID)
+            scenario.clear();scenario['status']=503
+            with pytest.raises(Exception):sdk.read_conditional_inventory(AT,CID)
+            scenario.clear()
+        finally:sdk.close()
+    for wire in (market_wire(BAD),market_wire(clobTokenIds=['101','101']),market_wire(outcomes=['No','Yes']),market_wire(clobTokenIds=['101'])):
+        public,_=external_sdk([wire]);sdk=ReadOnlySDK(public=public,http=httpx.Client(transport=httpx.MockTransport(http)),credentials=creds)
+        before=len(seen)
+        try:
+            with pytest.raises(ValueError):sdk.read_conditional_inventory(AT,CID)
+            assert len(seen)==before
+        finally:sdk.close()

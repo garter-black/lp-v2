@@ -555,3 +555,39 @@ def test_valid_identity_case_variants_need_no_profile_edits(combined_world,confi
         capsys.readouterr();assert len(world.mutations)==count and world.readonly is True
     credentials.write_bytes(credential_bytes)
     assert all(path.read_bytes()==value for path,value in protected.items())
+
+
+def test_live_check_preserves_safe_opening_details(combined_world,capsys):
+    from tests.test_readonly_sdk import taker_fee_wire
+    world=combined_world
+    wire=taker_fee_wire();wire['liquidityNum']='825.3674'
+    world.http_overrides['/markets/keyset']=(200,{'markets':[wire],'next_cursor':None})
+    def check():
+        assert main(['live','check'])==2
+        return json.loads(capsys.readouterr().out)
+    report=check();public=report['checks']['public_market'];row=public['checks']['opening_eligibility']
+    assert report['status']=='FAIL' and row['status']=='BLOCKED'
+    expected=dict(liquidity_num='825.3674',minimum_liquidity='1000',midpoint='0.47',minimum_midpoint='0.10',maximum_midpoint='0.90',
+                  as_of=world.clock.isoformat(),blockers=['LIQUIDITY_BELOW_MIN'])
+    assert row['details']==expected
+    for corruption in ('extra_only','extra','malformed','bool','nan','stale','foreign'):
+        def corrupt(raw):
+            detail=raw['checks']['opening_eligibility']['details']
+            if corruption=='extra_only':detail['secret']='SECRET_SENTINEL'
+            if corruption=='extra':detail['secret']='SECRET_SENTINEL';detail['blockers'].append('SECRET_SENTINEL')
+            if corruption=='malformed':detail['liquidity_num']={'secret':'SECRET_SENTINEL'}
+            if corruption=='bool':detail['liquidity_num']=True
+            if corruption=='nan':detail['liquidity_num']='NaN'
+            if corruption=='stale':raw['as_of']='2000-01-01T00:00:00+00:00'
+            if corruption=='foreign':raw['market']='0x'+'2'*64
+            return raw
+        world.public_report_transform=corrupt
+        result=check();assert 'SECRET_SENTINEL' not in json.dumps(result)
+        safe=result['checks']['public_market']['checks']['opening_eligibility']
+        if corruption=='extra_only':assert safe['details']==expected
+        else:assert 'details' not in safe
+        assert result['status']!='PASS'
+    world.public_report_transform=None;wire['feeSchedule']['takerOnly']=False
+    row=check()['checks']['public_market']['checks']
+    assert row['fees']['status']=='BLOCKED' and row['opening_eligibility']['details']==expected
+    assert world.mutations==[] and world.readonly

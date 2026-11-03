@@ -349,3 +349,41 @@ def test_live_startup_reports_safe_market_failure(tmp_path,monkeypatch,capsys):
         assert constructed==[] and all(m=='GET' for m,_ in seen)
         assert not (tmp_path/'state'/'journal.sqlite').exists()
     finally: public.close()
+
+
+def test_preflight_explains_liquidity_threshold(monkeypatch,capsys):
+    import httpx
+    from lp_v2.cli import main
+    from tests.test_readonly_sdk import taker_fee_wire,CID,AT
+    for liquidity,prices,expected,blockers in [
+        ('825.3674',('0.36','0.37'),'BLOCKED',['LIQUIDITY_BELOW_MIN']),
+        ('999.9999',('0.36','0.37'),'BLOCKED',['LIQUIDITY_BELOW_MIN']),
+        ('1000',('0.36','0.37'),'PASS',[]),
+        ('1000',('0.92','0.94'),'BLOCKED',['MIDPOINT_OUTSIDE_RANGE']),
+        (True,('0.36','0.37'),'BLOCKED',[]),
+        ('NaN',('0.36','0.37'),'BLOCKED',[]),
+        (None,('0.36','0.37'),'BLOCKED',[])]:
+        with monkeypatch.context() as patch:
+            wire=taker_fee_wire();wire['liquidityNum']=liquidity
+            _,public=public_preflight_world(patch,wire)
+            route=httpx.HTTPTransport.handle_request
+            def http(transport,request):
+                response=route(transport,request)
+                if request.url.path=='/book' and request.url.params['token_id']=='101':
+                    response.read();data=response.json()
+                    data['bids'][0]['price'],data['asks'][0]['price']=prices
+                    return httpx.Response(200,json=data)
+                return response
+            patch.setattr(httpx.HTTPTransport,'handle_request',http)
+            try:
+                code=main(['preflight','--market',CID,'--capital-usdc','100','--code-sha','a'*40])
+                report=json.loads(capsys.readouterr().out);row=report['checks']['opening_eligibility']
+                assert row['status']==expected and code==(0 if expected=='PASS' else 2)
+                details=row['details']
+                assert details['minimum_liquidity']=='1000'
+                assert details['minimum_midpoint']=='0.10' and details['maximum_midpoint']=='0.90'
+                assert details['as_of']==AT.isoformat() and details['blockers']==blockers
+                assert details['midpoint']==('0.93' if prices[0]=='0.92' else '0.365')
+                if liquidity in (True,'NaN',None):assert 'liquidity_num' not in details
+                else:assert details['liquidity_num']==liquidity
+            finally:public.close()

@@ -16,7 +16,7 @@ STEP_REASONS={
     'state_identity':{'JOURNAL_FROZEN_IDENTITY','EXPLICIT_NEW_STATE','STATE_IDENTITY_UNAVAILABLE'},
     'single_executor':{'EXECUTOR_AND_LOCK','SERVICE_EVIDENCE_MISSING','LOCAL_EXECUTOR_HANDOFF','COMPETING_LOCAL_EXECUTOR','LOCAL_EXECUTOR_SCAN_INCOMPLETE'},
     'legacy_service':{'LEGACY_SERVICE_HANDOFF','LEGACY_SERVICE_UNAVAILABLE'},
-    'inventory_handoff':{'ACCOUNT_EVIDENCE_MISSING','CONDITIONAL_BALANCE_UNAVAILABLE','NEW_STATE_ZERO_CONDITIONAL_BALANCES','OWNED_STOPPED_INVENTORY_MATCH','CONDITIONAL_INVENTORY_UNMATCHED','STOPPED_HANDOFF_INCOMPLETE'},
+    'inventory_handoff':{'CONDITIONAL_IDENTITY_UNAVAILABLE','ACCOUNT_EVIDENCE_MISSING','CONDITIONAL_BALANCE_UNAVAILABLE','NEW_STATE_ZERO_CONDITIONAL_BALANCES','OWNED_STOPPED_INVENTORY_MATCH','CONDITIONAL_INVENTORY_UNMATCHED','STOPPED_HANDOFF_INCOMPLETE'},
     'port':{'PORT_OWNER','SERVICE_EVIDENCE_MISSING'},
     'service':{'EFFECTIVE_SERVICE_CONTRACT','SERVICE_EVIDENCE_MISSING'},
     'balance':{'BALANCE_CAPITAL','ACCOUNT_EVIDENCE_MISSING'},
@@ -34,7 +34,34 @@ PUBLIC_REASONS={'OK','DEPENDENCY_UNKNOWN','PUBLIC_READ_UNAVAILABLE','MARKET_IDEN
     'BOOK_IDENTITY_CONSTRAINTS_OR_FRESHNESS','CHECK_DETAIL_UNAVAILABLE'}
 
 
-def public_details(rows):
+def opening_details(row,as_of):
+    """Allow only authored diagnostics bound to this fresh public observation."""
+    from decimal import Decimal
+    from lp_v2.live_control.profiles import timestamp
+    import re
+    try:
+        data=row['details']
+        if not isinstance(data,dict) or row.get('status') not in ('PASS','BLOCKED','UNKNOWN'):return None
+        if not fresh(as_of) or timestamp(data['as_of'])!=timestamp(as_of):return None
+        constants=dict(minimum_liquidity='1000',minimum_midpoint='0.10',maximum_midpoint='0.90')
+        if any(data.get(key)!=value for key,value in constants.items()):return None
+        result=dict(constants,as_of=timestamp(as_of).isoformat())
+        for key in ('liquidity_num','midpoint'):
+            if key in data:
+                value=data[key]
+                if (not isinstance(value,str) or len(value)>128 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?',value)
+                        or not Decimal(value).is_finite() or Decimal(value)<0):return None
+                result[key]=value
+        blockers=data['blockers']
+        if (not isinstance(blockers,list) or len(blockers)>2
+                or any(not isinstance(b,str) or b not in ('LIQUIDITY_BELOW_MIN','MIDPOINT_OUTSIDE_RANGE') for b in blockers)
+                or len(set(blockers))!=len(blockers)):return None
+        result['blockers']=list(blockers)
+        return result
+    except Exception:return None
+
+
+def public_details(rows,as_of=None):
     rows=rows if isinstance(rows,dict) else {}
     result={}
     for key in PUBLIC:
@@ -44,6 +71,9 @@ def public_details(rows):
         reason=row.get('reason_code')
         result[key]=dict(status=status if status in ('PASS','BLOCKED','UNKNOWN') else 'UNKNOWN',
             reason_code=reason if isinstance(reason,str) and reason in PUBLIC_REASONS else 'CHECK_DETAIL_UNAVAILABLE')
+        if key=='opening_eligibility':
+            details=opening_details(row,as_of)
+            if details is not None:result[key]['details']=details
     return result
 
 
@@ -95,7 +125,7 @@ def public_check(profile,public):
         rows=public['checks']
         values=[rows[key]['status'] for key in PUBLIC]
         if not all(value in ('PASS','BLOCKED','UNKNOWN') for value in values):raise ValueError()
-        details=public_details(rows)
+        details=public_details(rows,public.get('as_of'))
         reason='PREFLIGHT_INCOMPLETE'
         if public['status']=='BLOCKED' and 'BLOCKED' in values:
             status='FAIL';reason='PUBLIC_MARKET_BLOCKED'

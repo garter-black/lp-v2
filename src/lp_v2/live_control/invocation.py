@@ -53,7 +53,8 @@ def binding(profile,live,values,run):
     if env.endswith(' (ignore_errors=no)'):env=env[:-19]
     if env!=profile['files']['run_env']:raise ValueError('environment reference differs')
     if any(canonical(path)!=canonical(profile['files'][name]) for name,path in REFS.items()):raise ValueError('file reference differs')
-    reference=run(['git','-C',str(Path(profile['release']['root'])/'repo'),'show',profile['release']['expected_sha']+':deploy/run-live'])
+    from lp_v2.live_control.source import read
+    reference=read(profile,['show',profile['release']['expected_sha']+':deploy/run-live'],run)
     installed=(current/'deploy/run-live').read_bytes()
     if reference.returncode or installed!=reference.stdout.encode() or hashlib.sha256(installed).hexdigest()!=LAUNCHER_SHA256:
         raise ValueError('unsupported launcher bytes')
