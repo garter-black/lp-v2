@@ -5,6 +5,40 @@
 实际启动前仍需逐项满足 #5 的门禁并获得 Ray 对目标主机、钱包、市场、上限和窗口的明文批准。
 既有 `run --capital-usdc`、`lp-v2.service` 和 `deploy/deploy-lp-v2` 继续是只读路径。
 
+## 公开市场预检与人工切换
+
+保持只读服务运行，先在候选代码环境单独执行：
+
+```sh
+lp-v2 preflight --market <完整condition_id> --capital-usdc 100 --code-sha <40位SHA>
+```
+
+该命令仅发公开 GET，不读取签名/L2 文件，不创建 SecureClient、进程锁、状态目录或 journal，
+不调用 systemctl。JSON 输出含 `scope=public_market`、代码/市场/上限/UTC 时间和逐项
+`status`、`reason_code`。所有必需公开检查 PASS 才退出 0；BLOCKED 或 UNKNOWN 退出 2。
+身份不符时依赖该身份的检查保留 UNKNOWN，不使用返回的外来 token 查询订单簿。
+已能独立核验的费用、接单状态、奖励、政治分类、in_play、tick/最小量和簿时效分别报告。
+`PUBLIC_READ_UNAVAILABLE` 表示未能读回；`FEE_POLICY_UNPROVEN`、`MARKET_STATE_INVALID`、
+`BOOK_IDENTITY_CONSTRAINTS_OR_FRESHNESS` 等是稳定的脱敏拒绝原因，不输出原始异常或载荷。
+
+公开 PASS 不证明私有身份、Relayer 或 allowance 就绪；这些明确为 NOT_CHECKED，
+也不授予实盘权限。不得因 PASS 自动停止只读或启动实盘。获批后由操作员人工切换；
+回退仍由操作员按已批准的 stop/读回流程停止实盘，再明确恢复只读服务。
+本命令不执行切换、回滚或服务启动。
+
+`feesEnabled=true` 说明市场有费用，不等于 post-only maker 必须支付费用。
+仅接受完整、可验证的 taker-only feeSchedule：有限非负 rate、exponent=1、
+明确 takerOnly=true、rebateRate 在 [0,1]，并保留真实费用开关。
+例如 rate=.05 映射为 taker_fee_bps=500，rebateRate=.25；maker 计划费用显式为 (0,0)。
+明确关闭费用且没有费率表的市场仍支持；缺失、矛盾或不支持的费率数据不会默认为零。
+潜在返佣仅用于排名，实际收益仍依赖独立实际证据。
+当前成交适配器仍拒绝 maker.fee_rate_bps 非零或未落定成交，不能拿当前费率表推断历史成交成本。
+
+启动时市场校验失败输出白名单诊断：`stage=market_check`、
+`reason_code=MARKET_VALIDATION_UNAVAILABLE` 与完整公开 market。
+其他启动/停止错误仍只输出固定安全信息；不打印原始异常、凭据或响应体。
+签名身份核验仍先于可能产生副作用的 SDK 初始化。
+
 ## 启动输入与凭据
 
 只支持 Linux、Python 3.12+ 和固定 `polymarket-client==0.2.0`，钱包必须为既有
@@ -147,7 +181,7 @@ lp_yield_pct_per_day = 当日实际奖励 / 同一平均占用 × 100
 
 配对毛利润与库存毛成本排除费用，费用仅扣一次；Ledger 原有资金和已实现利润仍使用
 包含费用的成本。真实适配器目前只接受已验证零 maker fee 的已确认成交；费用不明、
-未结算成交或费用市场不参与乐观计算。不是用配置的潜在奖励率代替实际奖励。
+未结算成交不参与乐观计算；当前市场有 taker 费用不等于 maker 成交费用非零。不是用配置的潜在奖励率代替实际奖励。
 
 平均占用按已记录轮次间的占用作阶梯积分，属于观察频率下的时间加权估计，
 不是每个链上事件的连续精确积分。分母缺失或为零时收益率 UNKNOWN，不能拿启动上限代替。

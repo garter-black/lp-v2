@@ -235,3 +235,117 @@ def test_stop_after_executor_exit_is_idempotent(tmp_path,monkeypatch):
     (state/'executor.lock').chmod(0o644)
     assert stop_process(state)==1
     assert signals==[]
+
+
+def public_preflight_world(monkeypatch, wire, *, unavailable=False, stale=False):
+    import httpx
+    from datetime import datetime
+    from lp_v2 import cli
+    from tests.test_readonly_sdk import external_sdk, AT as public_at
+    public, seen = external_sdk([wire])
+    route = public._ctx.gamma._client._transport.handle_request
+    def dispatch(self, request):
+        if unavailable:
+            raise httpx.ConnectError('synthetic-credential-sentinel', request=request)
+        response = route(request)
+        if stale and request.url.path == '/book':
+            response.read()
+            data = response.json(); data['timestamp'] = '1'
+            return httpx.Response(200,json=data)
+        return response
+    monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', dispatch)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None): return public_at
+    monkeypatch.setattr(cli, 'datetime', Clock)
+    return seen, public
+
+
+@pytest.mark.parametrize('case', ['pass','blocked','unknown'])
+def test_preflight_is_public_and_observational(tmp_path,monkeypatch,capsys,case):
+    from lp_v2.cli import main
+    from tests.test_readonly_sdk import taker_fee_wire,CID as market_id
+    import lp_v2.cli as cli
+    from polymarket import SecureClient
+    from lp_v2.journal import Journal
+    from lp_v2.live_process import ProcessLock
+    import subprocess
+    wire=taker_fee_wire()
+    if case=='blocked': wire['feeSchedule']['takerOnly']=False
+    seen, public=public_preflight_world(monkeypatch,wire,unavailable=case=='unknown')
+    def forbidden(*a,**kw): raise AssertionError('private or mutation boundary reached')
+    monkeypatch.setattr(cli,'owner_file',forbidden)
+    monkeypatch.setattr(SecureClient,'create',forbidden)
+    monkeypatch.setattr(Journal,'__init__',forbidden)
+    monkeypatch.setattr(ProcessLock,'__init__',forbidden)
+    monkeypatch.setattr(subprocess,'Popen',forbidden)
+    monkeypatch.chdir(tmp_path)
+    before=set(tmp_path.rglob('*'))
+    try:
+        result=main(['preflight','--market',market_id,'--capital-usdc','100','--code-sha','a'*40])
+        body=json.loads(capsys.readouterr().out)
+        assert result==(0 if case=='pass' else 2)
+        assert body['status']=={'pass':'PASS','blocked':'BLOCKED','unknown':'UNKNOWN'}[case]
+        assert body['scope']=='public_market' and body['market']==market_id
+        assert body['code_sha']=='a'*40 and body['capital_usdc']=='100' and body['as_of']
+        for key in ('private_identity','relayer','allowance'):
+            assert body['checks'][key]['status']=='NOT_CHECKED'
+        assert 'synthetic-credential-sentinel' not in json.dumps(body)
+        assert all(method=='GET' for method,_ in seen)
+        assert set(tmp_path.rglob('*'))==before
+    finally: public.close()
+
+
+@pytest.mark.parametrize('case',['independent-blockers','foreign-identity'])
+def test_preflight_reports_all_available_blockers(tmp_path,monkeypatch,capsys,case):
+    from lp_v2.cli import main
+    from tests.test_readonly_sdk import taker_fee_wire,CID as market_id,BAD
+    wire=taker_fee_wire()
+    if case=='independent-blockers':
+        wire['feeSchedule']['takerOnly']=False
+        wire['acceptingOrders']=False
+    else:
+        wire['conditionId']=BAD
+        wire['clobTokenIds']=['901','902']
+    seen,public=public_preflight_world(monkeypatch,wire,stale=True)
+    try:
+        assert main(['preflight','--market',market_id,'--capital-usdc','100','--code-sha','a'*40])==2
+        body=json.loads(capsys.readouterr().out)
+        checks=body['checks']
+        if case=='independent-blockers':
+            assert all(checks[k]['status']=='BLOCKED' for k in ('fees','state','books'))
+            assert checks['market_identity']['status']=='PASS'
+        else:
+            assert checks['market_identity']['status']=='BLOCKED'
+            assert all(checks[k]['status']=='UNKNOWN' for k in ('fees','state','books','token_identity','in_play'))
+            assert not any('/book' in url or BAD in url or '901' in url or '902' in url for _,url in seen)
+    finally: public.close()
+
+
+def test_live_startup_reports_safe_market_failure(tmp_path,monkeypatch,capsys):
+    from lp_v2.cli import main
+    from tests.test_readonly_sdk import unproven_fee_wire,CID as market_id
+    from polymarket import SecureClient
+    import lp_v2.live_process as process
+    args,_=live_args(tmp_path)
+    args[args.index('--market')+1]=market_id
+    relay=tmp_path/'relayer.json'
+    relay.write_text(json.dumps(dict(key='synthetic-credential-sentinel',address=SIGNER)));relay.chmod(0o600)
+    args+=['--relayer-credentials-file',str(relay)]
+    seen,public=public_preflight_world(monkeypatch,unproven_fee_wire('non-taker-only'))
+    monkeypatch.setattr(process,'process_identity',lambda pid:'boot:123')
+    constructed=[]
+    def forbidden(**kw):
+        constructed.append(kw)
+        raise AssertionError('SecureClient must not be constructed')
+    monkeypatch.setattr(SecureClient,'create',forbidden)
+    try:
+        assert main(args)!=0
+        output=capsys.readouterr()
+        assert 'stage=market_check' in output.out
+        assert 'reason_code=MARKET_VALIDATION_UNAVAILABLE' in output.out
+        assert 'market='+market_id in output.out
+        assert 'synthetic-credential-sentinel' not in output.out+output.err
+        assert constructed==[] and all(m=='GET' for m,_ in seen)
+        assert not (tmp_path/'state'/'journal.sqlite').exists()
+    finally: public.close()
