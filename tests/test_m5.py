@@ -601,7 +601,7 @@ def test_report_readonly_boundary(tmp_path,monkeypatch,capsys,mode):
     journal.close()
 
 
-def test_seven_day_round_latency(tmp_path):
+def test_seven_day_round_latency(tmp_path,capsys):
     import signal
     import time
     from lp_v2.journal import Journal, encode, decode
@@ -666,7 +666,8 @@ def test_seven_day_round_latency(tmp_path):
     try:
         tick=time.perf_counter();result=runner.step(now);elapsed=time.perf_counter()-tick
     finally:signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,old)
-    print(f'M5 latency: {elapsed:.6f}s; generation {generated:.3f}s; 60480 rounds; {observations} live readbacks; counts {counts}; dataset {size} bytes',flush=True)
+    with capsys.disabled():
+        print(f'M5 latency: {elapsed:.6f}s; generation {generated:.3f}s; 60480 rounds; {observations} live readbacks; counts {counts}; dataset {size} bytes',flush=True)
     assert elapsed<=5
     production_traced=traced.copy()
     audit=decode(journal.db.execute("SELECT payload FROM events WHERE kind='occupation' ORDER BY seq DESC LIMIT 1").fetchone()[0])
@@ -689,7 +690,8 @@ def test_seven_day_round_latency(tmp_path):
     try:
         tick=time.perf_counter();code=r.drain(timeout_s=90);drained=time.perf_counter()-tick
     finally:signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,old)
-    print(f'M5 drain: {drained:.6f}s; exit {code}',flush=True)
+    with capsys.disabled():
+        print(f'M5 drain: {drained:.6f}s; exit {code}',flush=True)
     assert drained<=90 and code==0
     assert not sdk.known_open_order_ids() and not any(o.status=='LIVE' for o in ex.orders.values())
     stopped=journal.events('stop_result')[-1][1]

@@ -115,7 +115,14 @@ class LiveRunner:
                         self.ledger.apply_order(self.sdk.place_order(request, at=now))
                     for request in decision.merge:
                         self.ledger.apply_merge(self.sdk.merge(request, at=now))
-                self._m4_by_market = {cid:self._income_fields(now,plans,cid) for cid in self._markets}
+                day = now.astimezone(UTC).date()
+                if self._occupation_day != day:
+                    self._occupation_start = self.sdk.journal.day_lower_bound('occupation',day)
+                    self._occupation_day = day
+                samples = [p for _,p in self.sdk.journal.events('occupation',since_seq=self._occupation_start)
+                           if p['at'].astimezone(UTC).date() == day and p['at'] <= now]
+                samples.sort(key=lambda p:p['at'])
+                self._m4_by_market = {cid:self._income_fields(now,plans,cid,samples) for cid in self._markets}
                 self._m4 = self._m4_by_market[self.condition_id]
                 self._freshness = dict(decision_as_of=now,scores_as_of=now,wallet_as_of=now)
 
@@ -186,7 +193,7 @@ class LiveRunner:
                 orders=tuple(o.order_id for o in state.orders if not o.authoritative),
                 merges=tuple(r.request.merge_id for r in state.merges if r.outcome == Outcome.UNKNOWN)))
 
-    def _income_fields(self, now, plans, condition_id):
+    def _income_fields(self, now, plans, condition_id, samples):
         from lp_v2.models import Fill
         day = now.astimezone(UTC).date()
         metrics = {k:UNKNOWN for k in (*M4_FIELDS,'net_profit')}
@@ -248,14 +255,8 @@ class LiveRunner:
                 mark_at=mark_at,source='observed_boundary' if mark_at is not None else 'flat' if baseline is not None else UNKNOWN))
         else:
             baseline = baselines[-1]['inventory_pnl']
-        if self._occupation_day != day:
-            self._occupation_start = self.sdk.journal.day_lower_bound('occupation',day)
-            self._occupation_day = day
-        samples = [p for _,p in self.sdk.journal.events('occupation',since_seq=self._occupation_start)
-                   if p['at'].astimezone(UTC).date() == day and p['at'] <= now]
         average = None
         if samples:
-            samples.sort(key=lambda p:p['at'])
             duration = D(str((now-samples[0]['at']).total_seconds()))
             integral = D('0')
             for index,p in enumerate(samples):

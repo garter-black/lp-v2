@@ -29,6 +29,7 @@ class LiveSDK:
         self.wallet, self.signer = wallet, signer
         self.rpc = self.relayer = self.http = None
         self._order_reads = None
+        self._history_cache = None
         self.clock = clock
         self._cycle_at = None
 
@@ -44,6 +45,7 @@ class LiveSDK:
             yield
         finally:
             self._order_reads = None
+            self._history_cache = None
             self._cycle_at = None
 
     def _now(self):
@@ -123,10 +125,16 @@ class LiveSDK:
         return result
 
     def _history(self):
+        if self._order_reads is not None:
+            revision = (self.journal.last_sequence('intent'),self.journal.last_sequence('order_result'))
+            if self._history_cache is not None and self._history_cache[0] == revision:
+                return self._history_cache[1].copy()
         requests = {p['request'].request_id: p['request'] for _, p in self.journal.events('intent')}
         results = {key: OrderResult(r, Outcome.UNKNOWN, None, r.created_at) for key, r in requests.items()}
         for _, result in self.journal.events('order_result'):
             results[result.request.request_id] = result
+        if self._order_reads is not None:
+            self._history_cache = revision,results.copy()
         return results
 
     def _observed_order(self, raw, oid, previous, cancels):
@@ -434,9 +442,8 @@ class LiveSDK:
             raise ValueError('income market not selected')
         from polymarket.environments import PRODUCTION
         day = now.astimezone(UTC).date()
-        history = tuple((k,p) for k,p in self.journal.events('income') if p.get('condition_id',self.legacy_condition_id) == condition_id)
-        if history:
-            previous = history[-1][1]
+        previous = self.journal.latest_market_event('income',condition_id,self.legacy_condition_id)
+        if previous is not None:
             if previous['at'].astimezone(UTC).date() == day and 0 <= (now-previous['at']).total_seconds() < 60:
                 return previous
         result = dict(at=now,condition_id=condition_id,reward_today='UNKNOWN',rebate_today='UNKNOWN',reward_share='UNKNOWN',scoring='UNKNOWN')

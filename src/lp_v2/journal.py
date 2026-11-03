@@ -79,6 +79,17 @@ class Journal:
         row=self.db.execute("SELECT seq FROM events WHERE kind=? AND julianday(json_extract(payload,'$.at.datetime'))<julianday(?) ORDER BY seq DESC LIMIT 1",(kind,day.isoformat())).fetchone()
         return row[0]+1 if row else 0
 
+    def last_sequence(self, kind):
+        row = self.db.execute('SELECT max(seq) FROM events WHERE kind=?', (kind,)).fetchone()
+        return row[0] or 0
+
+    def latest_market_event(self, kind, condition_id, legacy_condition_id):
+        row = self.db.execute("""SELECT payload FROM events WHERE kind=? AND
+            CASE WHEN json_type(payload,'$.condition_id') IS NULL THEN ?
+                 ELSE json_extract(payload,'$.condition_id') END = ?
+            ORDER BY seq DESC LIMIT 1""", (kind,legacy_condition_id,condition_id)).fetchone()
+        return decode(row[0]) if row else None
+
     def events(self, kind=None, *, since_seq=0):
         rows = self.db.execute('SELECT kind,payload FROM events WHERE seq>=?'+(' AND kind=?' if kind is not None else '')+' ORDER BY seq', (since_seq,) if kind is None else (since_seq,kind))
         return tuple((k, decode(p)) for k,p in rows)
