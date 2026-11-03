@@ -107,6 +107,11 @@ def owner_file(path):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["live"]:
+        from lp_v2.live_control import main as live_main
+        return live_main(argv[1:])
     config = parse_run(argv)
     if isinstance(config,StopConfig):
         from lp_v2.live_process import stop_process

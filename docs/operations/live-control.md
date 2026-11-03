@@ -1,0 +1,175 @@
+# One-command live control
+
+`lp-v2 live` wraps the existing fixed-market executor. Code and offline tests do
+not authorize deployment, enabling live mode, trading, or a new run window.
+Installation, effective service permissions and field acceptance remain separate.
+
+## Existing default profile
+
+An existing v1 `tokyo` profile and default index load directly:
+
+```sh
+lp-v2 live profile show tokyo
+lp-v2 live check
+```
+
+The local lookup is `$XDG_CONFIG_HOME/lp-v2` or `~/.config/lp-v2`. The index is
+`config.json` with `schema_version: 1` and `default_profile: "tokyo"`; profiles are
+`profiles/<name>.json`. Directories must be owned 0700 and files owned regular
+0600, without symlinks. No setup or JSON editing is needed for an already-prepared
+complete v1 profile. `show` is local; `check` reads the selected target anew.
+Import timestamps are provenance, never current readiness evidence.
+
+The delivery owner preserves configuration compatibility and backups. After a
+separately approved deployment, that owner verifies the exact deployed SHA and
+artifacts and updates its pin and provenance. A profile change never deploys code.
+
+## New target or deliberate settings change
+
+For a new target, use an existing trusted SSH alias:
+
+```sh
+lp-v2 live setup --profile tokyo --ssh-host EXISTING_ALIAS --set-default
+lp-v2 live profile show tokyo
+lp-v2 live profile set tokyo --capital-usdc 80
+lp-v2 live profile set tokyo --market 0xCONDITION_ID
+lp-v2 live profile set tokyo --code-sha EXACT_DEPLOYED_SHA
+lp-v2 live profile set-default tokyo
+lp-v2 live check --profile tokyo
+```
+
+Placeholders in this guide are explanatory and cannot enable a run. Setup can
+prompt for the existing alias, capital and market. It imports only explicit
+standard deployment locations, not arbitrary credential discovery. An alternate
+release root can be supplied as `--release-root`. Unknown or conflicting sources
+fail safely. The displayed settings and sources require `save` before local
+persistence; this is not authorization to enable live mode. Missing prerequisites
+are reported rather than guessed. Drafts cannot become a usable default or start.
+
+The v1 fields are: schema/name/revision; target SSH alias and trusted SHA256 host
+key pin; release root and exact SHA; market and decimal capital; full signer,
+Proxy wallet and signature type 1; explicit signing/L2/relayer/run.env/state paths;
+fixed service user `lp-v2`, units `lp-v2.service` and `lp-v2-live.service`, port
+8765; timezone-aware update time and per-field sources. Credentials remain files
+on the target. The profile stores references and public identity only.
+
+`profile set` accepts capital, market, code SHA, SSH host, release root, signing
+file, L2 file, relayer file and run.env flags. It exposes no arbitrary JSON path,
+shell assignment, wallet type, state relocation or strategy settings. Saves show
+old/new values, require `save`, keep a protected `.bak`, compare the old revision
+under a local lock and atomically replace the profile. Revision conflicts require
+re-reading; cancellation/write failures preserve the existing profile and index.
+Saving local capital 80 does not change a target still configured for 100. Every
+new on rechecks the new revision, identity, occupancy and remote configuration.
+
+## Check, enable and stop
+
+`check` returns JSON with independent checks. Exit 0 means all required facts
+passed; exit 2 means failure, unknown evidence, busy, cancellation or an invalid
+request. Read the check map, not only a top-level status. A failed check does not
+stop the read-only service. Missing/old/malformed public preflight is UNKNOWN.
+No force/bypass flag exists.
+
+After separate authorization specifying target, wallet, exact code, market,
+capital and window, an operator can request:
+
+```sh
+lp-v2 live on --window-end 2099-01-01T00:00:00+00:00
+# Review the concrete target, revision, preparation and rollback, then type on.
+lp-v2 live off
+```
+
+The displayed date is a syntax example, not an approved window. `on` requires a
+future timezone-aware window end, checks before confirmation, rechecks after
+confirmation and rechecks on the target under its mutation lock. It starts once.
+The window is an authorization bound checked at execution, not a scheduler.
+Use `off` to stop; this command does not install a future automatic shutdown job.
+
+If an authorized preparation explicitly includes changing non-secret run.env
+values, use `on --prepare-run-env --window-end ...`. Only MARKET, CAPITAL and SHA
+can be changed, exactly to the displayed profile values, with backup and readback.
+All other gates must already pass. Other run.env lines, credential files, journal,
+restart policy and boot enablement are preserved. Unit installation, missing
+secrets or a new release require their own authorized preparation/deployment.
+
+Two fresh snapshots must independently prove the same run, full validated account,
+code, capital, unique fixed market, live process, stopped read-only process and
+SUCCESS accounting. Accounting, decision and snapshot times must advance. A
+systemctl 0, HTTP 200, mode=live alone or protective pause is insufficient proof
+of successful quoting. `eligible` and a sanitized skip indication are separate
+facts; a running process does not prove orders were placed or scored.
+
+`off` uses the frozen run record even after market/capital edits. It does not need
+opening-market checks. A changed target/root/state is ambiguous and is refused;
+do not select a different executor by editing the profile. The original process
+record, matching stop-result run ID and a new successful journal drain after the
+frozen run boundary must agree. Inventory is retained and reported. Process stop,
+drain, port release and read-only restoration are separate facts; restoring the
+read-only service never converts a missing/failed drain to success. No sell,
+foreign cancel, cancel-all, journal deletion or kill -9 path exists.
+
+## Loss, concurrency and recovery
+
+The confirmation display includes an action ID. Local pending operation receipts
+and target action results are stored before mutation, owner-only. To inspect a
+lost response, repeat the same on `--action-id` or off `--action-id`; the wrapper
+queries the recorded result instead of submitting start/stop again. UNKNOWN is
+not permission to choose a new ID and retry. A target control lock gives one
+mutation owner across prepare/on/off; a competing operation reports BUSY.
+The executor retains its existing process lock and append-only journal.
+
+Local run records live under `runs/`; operation receipts under `operations/`.
+Target records live under the explicit state directory: `live-control-run.json`,
+`control.lock`, `control-actions/`. Keep these with the existing journal, WAL,
+process lock and stop result. Never delete state to unblock a run. Stdout is JSON;
+a protected redirect (`umask 077`) can retain the sanitized report for task-flow
+handoff. Interactive commands emit a proposed-target JSON line before the final
+result. Raw SSH/HTTP errors, auth headers and relayer history are never reports.
+
+## Installation and proof limits
+
+Both caller and target need this release. The target also needs the #14 public
+`preflight` capability. A complete old release without that capability fails
+closed. SSH uses existing ED25519 trust, verifies the profile pin before a target
+command, and isolates that exact already-trusted key for the connection; it never
+accepts a new key. The helper is invoked as `lp-v2` using existing noninteractive
+sudo authority; that user needs read access to its protected files and separately
+provisioned narrow systemd control authority. The tool grants neither authority.
+
+Check verifies installed source against the pinned repository object and release,
+file permissions, environment, journal identity, effective services and port
+ownership. Existing draft units have an on-failure restart policy; a readiness
+check requiring no automatic retry does not silently change them. An effective
+approved service configuration must already meet the contract.
+
+Authenticated L2 GETs prove balance, explicit spender allowances, closed-only
+state and order observations independently. Authenticated relayer `/transactions`
+GET proves key authentication only; public `/deployed` cannot substitute for it.
+This checker does **not** prove submit/merge readiness. That separate required
+item remains UNKNOWN, so a real `on` is refused until authoritative proof is
+available under an approved contract. No new transaction is sent to probe it.
+Offline success scenarios model complete external evidence; they are not a claim
+that any actual account is ready.
+
+## Approved SOP block mapping
+
+This maps the operation/check blocks recorded in issue #15. The delivery owner
+must also compare the current private operator SOP before field acceptance.
+
+| Operator block | Automatic evidence and pass condition | Failure/recovery |
+| --- | --- | --- |
+| Target/version | Existing SSH trust + exact pin; current release/COMPLETE/source/runtime match SHA | Refuse; no release switch |
+| Files/wallet | Owned private files; derived signer + complete Proxy/L2 identity | Independent FAIL/UNKNOWN; no signing client |
+| Config/state | Exact market/capital/SHA; original 0700 state/journal identity | Refuse drift; preserve all state |
+| Executor/handoff | Existing process lock, service MainPID and port owner; authenticated orders | Busy/conflict/unknown blocks new start |
+| Public market | #14 scope/identity/time and every required public check | Missing capability UNKNOWN; no duplicate fee policy |
+| Private account | Balance, explicit allowances, closed-only, region and relayer auth | Missing evidence UNKNOWN; auth never proves merge |
+| Service/preparation | Effective start/stop paths, user, env, conflicts, restart/boot policy | Only confirmed env changes; no install or policy changes |
+| Switch | Same revision/facts/window before and after confirmation, target mutation lock | No unconfirmed mutation; action receipt before start |
+| Live readback | Two fresh advancing same-run snapshots with accounting SUCCESS | Bounded observation; owned drain/read-only rollback |
+| Stop/drain | Existing ExecStop; matching process result + fresh successful journal drain | Preserve failed/old/missing results and residuals |
+| Restore | Executor lock released and port free, then read-only identity/mode readback | Restore separate from drain; overall remains nonzero on uncertainty |
+| Evidence | Whitelisted JSON statuses and local protected operation/run records | No raw credentials, response bodies or transaction history |
+
+No target SSH/account check, deployment, real on/off, trade, merge, inventory sale
+or field acceptance is claimed by this implementation's offline verification.
