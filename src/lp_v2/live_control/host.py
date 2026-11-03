@@ -150,6 +150,48 @@ def inventory_report(rows):
     return result
 
 
+
+def merge_history_report(profile,merges):
+    from decimal import Decimal
+    from lp_v2.models import MergeResult,MergeRequest,Position,Outcome
+    if merges is None:return dict(status='UNKNOWN',reason='MERGE_HISTORY_MISSING')
+    if not isinstance(merges,(list,tuple)):return dict(status='UNKNOWN',reason='MERGE_HISTORY_INVALID')
+    try:
+        seen=set()
+        def money(value,positive=False):
+            return isinstance(value,Decimal) and value.is_finite() and value>=0 and (not positive or value>0)
+        for result in merges:
+            if not isinstance(result,MergeResult) or not isinstance(result.request,MergeRequest):raise ValueError()
+            request=result.request
+            if (not isinstance(request.merge_id,str) or not request.merge_id or request.merge_id in seen
+                    or request.owner!='lp-v2:'+profile['identity']['wallet_address'].lower()
+                    or request.condition_id!=profile['trading']['market_condition_id']
+                    or not isinstance(request.yes_token_id,str) or not isinstance(request.no_token_id,str)
+                    or not request.yes_token_id or not request.no_token_id or request.yes_token_id==request.no_token_id
+                    or not isinstance(result.outcome,Outcome) or type(request.generation) is not int or request.generation<0
+                    or request.created_at.tzinfo is None or result.observed_at.tzinfo is None or result.observed_at<request.created_at
+                    or not money(request.quantity,True) or not money(result.received_usdc)):
+                raise ValueError()
+            seen.add(request.merge_id)
+            if result.outcome==Outcome.UNKNOWN:
+                return dict(status='UNKNOWN',reason='MERGE_UNSETTLED',count=len(merges))
+            if result.outcome==Outcome.FAILED:
+                if result.received_usdc!=0 or result.consumed_positions:raise ValueError()
+            elif result.outcome==Outcome.SUCCESS:
+                legs=result.consumed_positions
+                if result.received_usdc!=request.quantity:
+                    return dict(status='UNKNOWN',reason='MERGE_UNSETTLED',count=len(merges))
+                if (len(legs)!=2 or any(not isinstance(p,Position) for p in legs)
+                        or {p.token_id for p in legs}!={request.yes_token_id,request.no_token_id}
+                        or any(p.owner!=request.owner or p.condition_id!=request.condition_id or p.quantity!=request.quantity
+                               or not money(p.quantity,True) or not money(p.cost_usdc) for p in legs)):
+                    raise ValueError()
+            else:raise ValueError()
+        return dict(status='PASS',reason='KNOWN_MERGES_TERMINAL',count=len(merges))
+    except Exception:
+        return dict(status='UNKNOWN',reason='MERGE_HISTORY_INVALID')
+
+
 def off(request):
     from lp_v2.live_control.profiles import timestamp
     profile=request['profile']; state=Path(profile['files']['state_dir'])
@@ -171,15 +213,16 @@ def off(request):
     stopped=process_stopped(profile)
     port=run(['ss','-H','-ltn','sport = :8765'])
     released=port.returncode==0 and port.stdout.strip()==''
-    drained='UNKNOWN'; inventory=[]
+    drained='UNKNOWN'; inventory=[];merges=dict(status='UNKNOWN',reason='MERGE_HISTORY_MISSING')
     try:
         seq,drain=journal_rows(profile,'stop_result')[-1]
         inventory=inventory_report(drain['inventory'])
+        merges=merge_history_report(profile,drain.get('merges'))
         final=read_json(state/'stop-result.json')
         if (final['run_id']==record['run_id'] and type(final['exit_code']) is int and final['exit_code']==0
                 and type(drain['exit_code']) is int and drain['exit_code']==0 and drain['reconciliation']=='SUCCESS'
                 and seq>record['journal_seq'] and timestamp(drain['at'].isoformat())>timestamp(record['started_at'])
-                and not drain['pending'] and all(order.authoritative and order.status.value in ('filled','cancelled') for order in drain['orders'])):
+                and merges['status']=='PASS' and not drain['pending'] and all(order.authoritative and order.status.value in ('filled','cancelled') for order in drain['orders'])):
             drained='PASS'
         elif final['run_id']==record['run_id'] and final['exit_code']!=0:
             drained='FAIL'
@@ -200,7 +243,7 @@ def off(request):
             except Exception:
                 pass
     return dict(status='PASS' if result.returncode==0 and stopped and released and drained=='PASS' and restored else 'UNKNOWN',
-        executor_stopped=stopped,port_released=released,drain=drained,readonly_restored=restored,inventory=inventory,run_id=record['run_id'])
+        executor_stopped=stopped,port_released=released,drain=drained,readonly_restored=restored,inventory=inventory,merge_history=merges,run_id=record['run_id'])
 
 
 
@@ -210,6 +253,8 @@ def mutate(request):
     profile=request['profile']; action=request['action']; action_id=request.get('action_id')
     if not isinstance(action_id,str) or not re.fullmatch('[0-9a-f]{32}',action_id):
         return dict(status='UNKNOWN',reason='ACTION_INVALID')
+    if action=='off' and (not isinstance(request.get('run_id'),str) or not re.fullmatch('[0-9a-f]{32}',request['run_id'])):
+        return dict(status='UNKNOWN',reason='ACTION_IDENTITY_MISMATCH')
     if action in ('on','prepare') and not confirmed(request,action):
         return dict(status='UNKNOWN',reason='CONFIRMATION_REQUIRED')
     from lp_v2.live_control.privileges import operator_ready
@@ -230,17 +275,18 @@ def mutate(request):
         path=directory/(action_id+'.json')
         if path.exists() or path.is_symlink():
             prior=read_json(path)
-            if prior['profile_sha256']!=fingerprint(profile) or prior['action']!=action:
+            if (prior.get('profile_sha256')!=fingerprint(profile) or prior.get('action')!=action
+                    or (action=='off' and prior.get('run_id')!=request['run_id'])):
                 return dict(status='UNKNOWN',reason='ACTION_IDENTITY_MISMATCH')
-            return prior['result']
-        record=dict(action=action,profile_sha256=fingerprint(profile),result=dict(status='UNKNOWN',reason='ACTION_PENDING'),as_of=now())
+            return dict(prior['result'],action=action,**({'run_id':prior['run_id']} if action=='off' else {}))
+        record=dict(action=action,run_id=request.get('run_id') if action=='off' else None,profile_sha256=fingerprint(profile),result=dict(status='UNKNOWN',reason='ACTION_PENDING'),as_of=now())
         atomic_json(path,record)
         try:
             result=off(request) if action=='off' else start(request) if action=='on' else prepare(request)
         except Exception:
             result=dict(status='UNKNOWN',reason='ACTION_OUTCOME_UNKNOWN')
         record['result']=result;atomic_json(path,record)
-        return result
+        return dict(result,action=action,**({'run_id':record['run_id']} if action=='off' else {}))
     finally:
         os.close(fd)
 
@@ -254,9 +300,13 @@ def action_result(request):
     profile=request['profile']
     state=Path(profile['files']['state_dir']);secure_directory(state);secure_directory(state/'control-actions')
     record=read_json(state/'control-actions'/(action_id+'.json'))
-    if record['profile_sha256']!=fingerprint(profile):
-        raise ValueError()
-    return record['result']
+    expected=request.get('expected_action')
+    if (expected not in ('on','off','prepare') or record.get('action')!=expected
+            or record.get('profile_sha256')!=fingerprint(profile)
+            or (expected=='off' and (not isinstance(request.get('run_id'),str)
+                or not re.fullmatch('[0-9a-f]{32}',request['run_id']) or record.get('run_id')!=request['run_id']))):
+        return dict(status='UNKNOWN',reason='ACTION_IDENTITY_MISMATCH')
+    return dict(record['result'],action=expected,**({'run_id':record['run_id']} if expected=='off' else {}))
 
 
 
@@ -437,13 +487,25 @@ def import_profile(partial):
 
 
 def safe_public(profile,raw):
-    from lp_v2.live_control.workflow import public_check,PUBLIC
-    validated=public_check(profile,raw)
-    if validated['status']=='UNKNOWN':
-        return dict(scope='public_market',status='UNKNOWN',checks={key:dict(status='UNKNOWN') for key in PUBLIC})
-    return dict(scope='public_market',status=raw['status'],code_sha=raw['code_sha'],market=raw['market'],
-        capital_usdc=raw['capital_usdc'],as_of=raw['as_of'],checks={key:dict(status=raw['checks'][key]['status']) for key in PUBLIC})
-
+    from lp_v2.live_control.workflow import public_details
+    from lp_v2.live_control.profiles import timestamp
+    from decimal import Decimal
+    import re
+    raw=raw if isinstance(raw,dict) else {}
+    result=dict(scope='public_market' if raw.get('scope')=='public_market' else 'UNKNOWN',
+                status=raw.get('status') if raw.get('status') in ('PASS','BLOCKED','UNKNOWN') else 'UNKNOWN',
+                checks=public_details(raw.get('checks')))
+    for key,pattern in [('code_sha',r'[0-9a-f]{40}'),('market',r'0x[0-9a-fA-F]{64}')]:
+        value=raw.get(key)
+        if isinstance(value,str) and re.fullmatch(pattern,value):result[key]=value
+    try:
+        capital=raw.get('capital_usdc')
+        if isinstance(capital,str) and Decimal(capital).is_finite() and Decimal(capital)>0:
+            result['capital_usdc']=capital
+    except Exception:pass
+    try:result['as_of']=timestamp(raw.get('as_of')).isoformat()
+    except Exception:pass
+    return result
 
 
 def safe_summary(raw):
@@ -491,7 +553,7 @@ def main(*,stdin=None,stdout=None):
         request=json.loads(stdin.read(131073))
         if type(request.get('schema_version')) is not int or request['schema_version']!=1 or request.get('action') not in ('check','prepare','off','result','on','observe','import'):
             raise ValueError()
-        if set(request)-{'schema_version','action','profile','action_id','confirmation','window_end','changes','run_id'}:
+        if set(request)-{'schema_version','action','profile','action_id','confirmation','window_end','changes','run_id','expected_action'}:
             raise ValueError()
         profile=request['profile']
         if request['action']!='import': validate(profile,complete=True)

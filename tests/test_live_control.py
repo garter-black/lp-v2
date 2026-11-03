@@ -209,7 +209,7 @@ def seed_run(target):
     return run
 
 
-def off_boundary(target,monkeypatch,*,failure=None):
+def off_boundary(target,monkeypatch,*,failure=None,merge_evidence=()):
     from pathlib import Path
     from lp_v2.journal import Journal
     from lp_v2.models import OrderStatus
@@ -223,7 +223,9 @@ def off_boundary(target,monkeypatch,*,failure=None):
             if failure!='missing':
                 p=state/'stop-result.json';p.write_text(json.dumps(result));p.chmod(0o600)
             journal=Journal(state/'journal.sqlite')
-            journal.append('stop_result',dict(at=datetime.now(UTC),exit_code=result['exit_code'],orders=[],pending=[],positions=[],merges=[],inventory=[{'quantity':'3','cost_usdc':'1'}],reconciliation='SUCCESS',accounting_as_of=datetime.now(UTC)))
+            drain=dict(at=datetime.now(UTC),exit_code=result['exit_code'],orders=[],pending=[],positions=[],inventory=[{'quantity':'3','cost_usdc':'1'}],reconciliation='SUCCESS',accounting_as_of=datetime.now(UTC))
+            if merge_evidence!='missing':drain['merges']=merge_evidence
+            journal.append('stop_result',drain)
             journal.close()
         if argv[0]=='ss':
             return subprocess.CompletedProcess(argv,1 if failure=='readback' else 0,'','')
@@ -275,7 +277,7 @@ def test_off_uses_frozen_run_identity_after_profile_edit(config_home,profile,mon
     def handler(req):
         calls.append(req)
         assert req['profile']==profile and req['run_id']=='f'*32
-        return dict(status='PASS',executor_stopped=True,drain='PASS',port_released=True,readonly_restored=True,run_id='f'*32)
+        return dict(status='PASS',executor_stopped=True,drain='PASS',port_released=True,readonly_restored=True,run_id='f'*32,merge_history=dict(status='PASS',reason='KNOWN_MERGES_TERMINAL'))
     install_ssh(monkeypatch,handler)
     assert main(['live','off'])==0
     report=json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -378,3 +380,82 @@ def test_missing_startup_proof_still_blocks_before_mutation(combined_world,monke
             assert report['checks'][key]['status'] in ('UNKNOWN','FAIL'),report
             assert world.mutations==[] and world.readonly is True and env.read_bytes()==original_env
             credentials.write_bytes(original)
+
+
+def test_off_receipt_rejects_other_run_action_and_profile(combined_world,config_home,monkeypatch,capsys):
+    world=combined_world;profile=world.profile
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    assert main(['live','on','--action-id','a'*32,'--window-end','2099-01-01T00:00:00+00:00'])==0
+    run_a=world.lease.record['run_id'];capsys.readouterr()
+    assert main(['live','off','--action-id','1'*32])==0;capsys.readouterr()
+    stops=world.mutations.count(('stop','lp-v2-live.service'))
+    assert main(['live','off','--action-id','1'*32])==0;capsys.readouterr()
+    assert world.mutations.count(('stop','lp-v2-live.service'))==stops
+    assert world.requests[-1]['action']=='result'
+    assert main(['live','on','--action-id','b'*32,'--window-end','2099-01-01T00:00:00+00:00'])==0
+    run_b=world.lease.record['run_id'];assert run_b!=run_a;capsys.readouterr()
+    calls=len(world.requests)
+    assert main(['live','off','--action-id','1'*32])==2;capsys.readouterr()
+    assert len(world.requests)==calls and world.lease.record['run_id']==run_b
+    assert main(['live','off','--action-id','b'*32])==2;capsys.readouterr()
+    assert len(world.requests)==calls
+    local=config_home/'operations'/('1'*32+'.json')
+    forged=json.loads(local.read_text());forged['run_id']=run_b
+    forged['profile']=copy.deepcopy(profile);forged['profile']['trading']['capital_usdc']='80'
+    local.write_text(json.dumps(forged))
+    assert main(['live','off','--action-id','1'*32])==2;capsys.readouterr()
+    assert len(world.requests)==calls
+    forged['profile']=profile;local.write_text(json.dumps(forged))
+    assert main(['live','off','--action-id','1'*32])==2;capsys.readouterr()
+    assert world.mutations.count(('stop','lp-v2-live.service'))==stops
+    for action,extra in [('off',dict(run_id=run_b)),('off',{}),
+        ('result',dict(expected_action='off',run_id=run_b)),('result',dict(expected_action='off')),
+        ('result',dict(expected_action='on',run_id=run_a)),('result',dict(run_id=run_a))]:
+        code,output=world.invoke(dict(schema_version=1,profile=profile,action=action,action_id='1'*32,**extra))
+        assert code==2 and json.loads(output)['status']!='PASS'
+        assert world.mutations.count(('stop','lp-v2-live.service'))==stops
+    assert world.lease.record['run_id']==run_b
+    assert main(['live','off'])==0;capsys.readouterr()
+
+
+def test_on_rejects_fresh_protective_pause(combined_world,monkeypatch,capsys):
+    world=combined_world;monkeypatch.setattr('builtins.input',lambda _:'on')
+    for scenario in ('protective','missing'):
+        world.pause=scenario;before=len(world.mutations)
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        report=json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert report['phase']=='verify_live' and report['status']!='PASS'
+        assert report['rollback']['drain']=='PASS' and report['rollback']['readonly_restored'] is True
+        assert world.mutations[before:]==[('stop','lp-v2.service'),('start','lp-v2-live.service'),('stop','lp-v2-live.service'),('start','lp-v2.service')]
+        assert world.lease is None and world.readonly is True
+    world.pause=None
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==0
+    capsys.readouterr()
+    assert main(['live','off'])==0;capsys.readouterr()
+
+
+def test_check_retains_safe_step_reasons(combined_world,capsys):
+    from pathlib import Path
+    world=combined_world;world.fee_blocked=True;world.stale_public=True
+    env=Path(world.profile['files']['run_env']);env.write_text(env.read_text().replace('CAPITAL_USDC=100','CAPITAL_USDC=80'))
+    assert main(['live','check'])==2
+    report=json.loads(capsys.readouterr().out)
+    assert report['checks']['run_env']['reason']=='ENV_EXPECTATION_DIFFERS'
+    public=report['checks']['public_market']['checks']
+    assert public['fees']==dict(status='BLOCKED',reason_code='FEE_POLICY_UNPROVEN')
+    assert public['books']==dict(status='BLOCKED',reason_code='BOOK_IDENTITY_CONSTRAINTS_OR_FRESHNESS')
+    assert world.mutations==[] and world.readonly is True
+    sentinel='SECRET_SENTINEL_DIAGNOSTIC'
+    def corrupt(data):
+        data['checks']['fees']['reason_code']=sentinel
+        data['checks']['fees']['debug']={'Authorization':sentinel}
+        data['checks'][sentinel]=dict(status='PASS',reason_code=sentinel)
+        data['raw_error']=sentinel
+        return data
+    world.public_report_transform=corrupt
+    assert main(['live','check'])==2
+    text=capsys.readouterr().out;safe=json.loads(text)
+    assert sentinel not in text and world.profile['files']['run_env'] not in text
+    assert safe['checks']['public_market']['checks']['fees']['reason_code']=='CHECK_DETAIL_UNAVAILABLE'
+    assert safe['checks']['public_market']['checks']['books']['status']=='BLOCKED'
+    assert world.mutations==[]

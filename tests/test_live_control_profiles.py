@@ -173,3 +173,32 @@ def known_ssh(argv):
     if argv[0]=='ssh-keygen':
         value='synthetic ssh-ed25519 AAAA\n' if '-F' in argv else '256 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA synthetic (ED25519)\n'
         return subprocess.CompletedProcess(argv,0,value,'')
+
+
+def test_setup_reports_saved_draft_missing_fields(config_home,profile,monkeypatch,capsys):
+    (config_home/'profiles/tokyo.json').unlink();(config_home/'config.json').unlink()
+    imported=copy.deepcopy(profile);del imported['files']['relayer_credentials'];del imported['trading']['capital_usdc']
+    calls=[]
+    def ssh(argv,**kw):
+        if known_ssh(argv):return known_ssh(argv)
+        request=json.loads(kw['input']);calls.append(request['action'])
+        data=dict(profile=imported) if request['action']=='import' else dict(schema_version=1,status='UNKNOWN',checks={})
+        return subprocess.CompletedProcess(argv,0,json.dumps(data),'')
+    monkeypatch.setattr(subprocess,'run',ssh)
+    answers=iter(['100','save']);monkeypatch.setattr('builtins.input',lambda _:next(answers))
+    assert main(['live','setup','--profile','tokyo','--ssh-host','synthetic-tokyo','--set-default'])==2
+    report=json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert report['status']=='SAVED_DRAFT' and report['local_saved'] is True
+    assert report['name']=='tokyo' and report['revision']==1
+    assert report['missing']==['files.relayer_credentials'] and report['can_enable'] is False
+    assert report['default_saved'] is False and not (config_home/'config.json').exists()
+    path=config_home/'profiles/tokyo.json'
+    assert json.loads(path.read_text())['trading']['capital_usdc']=='100'
+    assert path.stat().st_mode & 0o777 ==0o600 and path.parent.stat().st_mode & 0o777 ==0o700
+    assert calls==['import']
+    imported=copy.deepcopy(profile);monkeypatch.setattr('builtins.input',lambda _:'save')
+    assert main(['live','setup','--profile','tokyo','--ssh-host','synthetic-tokyo','--set-default'])==0
+    completed=json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert completed['status']=='SAVED' and completed['missing']==[] and completed['revision']==2
+    assert json.loads((config_home/'config.json').read_text())['default_profile']=='tokyo'
+    assert calls==['import','import','check']

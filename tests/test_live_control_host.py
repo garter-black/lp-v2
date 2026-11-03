@@ -218,7 +218,10 @@ def combined_world(target, config_home, monkeypatch):
         if 'preflight' in argv:
             output=io.StringIO()
             with contextlib.redirect_stdout(output):code=cli_main(argv[1:])
-            return subprocess.CompletedProcess(argv,code,output.getvalue(),'')
+            value=output.getvalue()
+            transform=getattr(world,'public_report_transform',None)
+            if transform is not None:value=json.dumps(transform(json.loads(value)))
+            return subprocess.CompletedProcess(argv,code,value,'')
         if argv[0]=='systemctl':
             action,unit=argv[1:3]
             assert unit in ('lp-v2.service','lp-v2-live.service')
@@ -254,7 +257,10 @@ def combined_world(target, config_home, monkeypatch):
         path=request.url.path
         if path in world.http_overrides:
             status,data=world.http_overrides[path];return httpx.Response(status,json=data,request=request)
-        if path=='/markets/keyset':data={'markets':[taker_fee_wire()],'next_cursor':None}
+        if path=='/markets/keyset':
+            wire=taker_fee_wire()
+            if getattr(world,'fee_blocked',False):wire['feeSchedule']['takerOnly']=False
+            data={'markets':[wire],'next_cursor':None}
         elif path=='/book':
             token=request.url.params['token_id'];bid,ask=('0.46','0.48') if token=='101' else ('0.51','0.53')
             data=dict(market=target['trading']['market_condition_id'],asset_id=token,
@@ -275,6 +281,10 @@ def combined_world(target, config_home, monkeypatch):
                 run=dict(code_sha=target['release']['expected_sha'],wallet_tail=target['identity']['wallet_address'][-4:]),
                 accounting=dict(status='SUCCESS',as_of=world.clock.isoformat()),freshness=dict(decision_as_of=world.clock.isoformat()),
                 markets=[dict(condition_id=target['trading']['market_condition_id'],eligible=True,skip_reason=None)])
+            if world.lease and getattr(world,'pause',None)=='protective':
+                data['markets'][0].update(eligible=False,skip_reason='protective pause')
+            if world.lease and getattr(world,'pause',None)=='missing':
+                del data['markets'][0]['eligible']
         else:pytest.fail('unexpected HTTP path '+path)
         return httpx.Response(200,json=data,request=request)
     monkeypatch.setattr(subprocess,'run',command)
@@ -340,3 +350,26 @@ def test_operator_route_preserves_service_owned_state(combined_world,monkeypatch
     world.process_identity_valid=True
     assert main(['live','off'])==0
     capsys.readouterr()
+
+
+def test_off_unknown_merge_remains_unknown(target,monkeypatch):
+    from decimal import Decimal as D
+    from datetime import datetime,UTC
+    from lp_v2.models import MergeResult,MergeRequest,Outcome,Position
+    from tests.test_live_control import seed_run,off_boundary
+    owner='lp-v2:'+target['identity']['wallet_address'].lower();market=target['trading']['market_condition_id'];at=datetime.now(UTC)
+    request=MergeRequest('synthetic-merge',owner,market,'101','102',D('1'),at)
+    unknown=MergeResult(request,Outcome.UNKNOWN,D('0'),at)
+    terminal=MergeResult(request,Outcome.SUCCESS,D('1'),at,tuple(Position(owner,market,token,D('1'),D('.4'),at) for token in ('101','102')))
+    ack=MergeResult(request,Outcome.SUCCESS,D('0'),at)
+    for number,(merges,expected) in enumerate([([unknown],'UNKNOWN'),('missing','UNKNOWN'),({},'UNKNOWN'),([ack],'UNKNOWN'),([], 'PASS'),([terminal],'PASS')],1):
+        seed_run(target);calls=off_boundary(target,monkeypatch,merge_evidence=merges)
+        code,report=call_host(dict(schema_version=1,action='off',profile=target,run_id='f'*32,action_id=str(number)*32))
+        assert report['merge_history']['status']==expected
+        assert report['executor_stopped'] is True and report['readonly_restored'] is True
+        assert report['inventory'][0]['quantity']=='3'
+        if expected=='UNKNOWN':
+            assert code==2 and report['drain']=='UNKNOWN' and report['status']!='PASS'
+            assert report['merge_history']['reason'] in ('MERGE_UNSETTLED','MERGE_HISTORY_MISSING','MERGE_HISTORY_INVALID')
+        else:assert code==0 and report['drain']=='PASS'
+        assert not any(any(arg in argv for arg in ('merge','submit','cancel')) for argv in calls)

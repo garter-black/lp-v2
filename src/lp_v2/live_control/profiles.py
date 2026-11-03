@@ -154,7 +154,7 @@ def setup(name, host, *, capital=None, market=None, default=False, release_root=
     print(json.dumps(dict(previous=old,proposed=profile,path=str(config_root()/'profiles'/(name+'.json')))))
     if input('Type save to save local settings (not live authorization): ')!='save':
         raise ProfileError('SAVE_CANCELLED')
-    return save(profile,default=default,expected=old)
+    return save(profile,default=default and not validate(profile),expected=old)
 
 
 FIELDS={

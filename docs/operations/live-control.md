@@ -48,6 +48,11 @@ release root can be supplied as `--release-root`. Unknown or conflicting sources
 fail safely. The displayed settings and sources require `save` before local
 persistence; this is not authorization to enable live mode. Missing prerequisites
 are reported rather than guessed. Drafts cannot become a usable default or start.
+A successfully saved incomplete draft reports `status=SAVED_DRAFT`,
+`local_saved=true`, name/revision, exact `missing` fields and `can_enable=false`,
+with exit2. It does not run a complete target check or save the requested default
+selection. Re-enter setup to complete the import; a full save reports `SAVED`
+with a separate check result. A saved draft is distinct from a failed save.
 
 The v1 fields are: schema/name/revision; target SSH alias and trusted SHA256 host
 key pin; release root and exact SHA; market and decimal capital; full signer,
@@ -71,6 +76,11 @@ new on rechecks the new revision, identity, occupancy and remote configuration.
 passed; exit 2 means failure, unknown evidence, busy, cancellation or an invalid
 request. Read the check map, not only a top-level status. A failed check does not
 stop the read-only service. Missing/old/malformed public preflight is UNKNOWN.
+Each private/config check retains a recognized safe `reason`; public market
+subchecks appear under `checks.public_market.checks` with their fixed
+`reason_code` (for example fees or book freshness). Unknown external detail is
+`CHECK_DETAIL_UNAVAILABLE`; stale/protocol/identity evidence has an explicit safe
+reason. Raw error text, arbitrary subcheck keys and private paths are not reports.
 No force/bypass flag exists.
 
 After separate authorization specifying target, wallet, exact code, market,
@@ -99,8 +109,10 @@ Two fresh snapshots must independently prove the same run, full validated accoun
 code, capital, unique fixed market, live process, stopped read-only process and
 SUCCESS accounting. Accounting, decision and snapshot times must advance. A
 systemctl 0, HTTP 200, mode=live alone or protective pause is insufficient proof
-of successful quoting. `eligible` and a sanitized skip indication are separate
-facts; a running process does not prove orders were placed or scored.
+of successful quoting. Both accepted rounds require `eligible=true` and
+`skip_reason=null` for the single matching market. A pause, a missing eligibility
+field or a skip reason triggers bounded owned rollback and remains nonzero;
+a running process does not prove orders were placed or scored.
 
 `off` uses the frozen run record even after market/capital edits. It does not need
 opening-market checks. A changed target/root/state is ambiguous and is refused;
@@ -110,13 +122,22 @@ frozen run boundary must agree. Inventory is retained and reported. Process stop
 drain, port release and read-only restoration are separate facts; restoring the
 read-only service never converts a missing/failed drain to success. No sell,
 foreign cancel, cancel-all, journal deletion or kill -9 path exists.
+Drain also requires complete valid merge history. Missing/malformed history,
+UNKNOWN outcomes or acknowledgement without settlement keep drain and the
+overall result UNKNOWN, even if readonly is restored. `merge_history` reports the
+uncertainty separately and retains inventory. Empty complete history or known
+terminal results do not replace the other drain proofs; no merge is replayed.
 
 ## Loss, concurrency and recovery
 
 The confirmation display includes an action ID. Local pending operation receipts
 and target action results are stored before mutation, owner-only. To inspect a
 lost response, repeat the same on `--action-id` or off `--action-id`; the wrapper
-queries the recorded result instead of submitting start/stop again. UNKNOWN is
+queries the recorded result instead of submitting start/stop again. Off receipts
+must bind operation=off, the exact frozen profile and run ID locally and on the
+target. An old run's action ID, on receipt, malformed legacy receipt or changed
+profile cannot return a new run's success; mismatches refuse without mutation.
+UNKNOWN is
 not permission to choose a new ID and retry. A target control lock gives one
 mutation owner across prepare/on/off; a competing operation reports BUSY.
 The executor retains its existing process lock and append-only journal.

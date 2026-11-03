@@ -22,7 +22,16 @@ def main(argv):
     try:
         if args.command=='setup':
             profile=profiles.setup(args.profile,args.ssh_host,capital=args.capital_usdc,market=args.market,default=args.set_default,release_root=args.release_root)
-            result=dict(status='SAVED',check=workflow.check(profile)); code=0
+            missing=profiles.validate(profile)
+            result=dict(status='SAVED_DRAFT' if missing else 'SAVED',local_saved=True,name=profile['name'],
+                        revision=profile['revision'],missing=missing,can_enable=False,default_saved=bool(args.set_default and not missing))
+            if missing:
+                code=2
+            else:
+                try:result['check']=workflow.check(profile)
+                except Exception:result['check']=dict(status='UNKNOWN',reason='CHECK_UNAVAILABLE')
+                result['can_enable']=result['check'].get('status')=='PASS'
+                code=0
         elif args.command=='profile':
             if args.operation=='set':
                 profile=profiles.edit(args.name,vars(args))

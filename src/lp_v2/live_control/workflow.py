@@ -6,6 +6,45 @@ REQUIRED=('release','artifacts','files','private_identity','run_env','state_iden
 PUBLIC=('market_identity','token_identity','fees','state','political','in_play','rewards','constraints','books','opening_eligibility','market_inputs')
 
 
+
+STEP_REASONS={
+    'release':{'RELEASE_IDENTITY','RELEASE_UNAVAILABLE'},
+    'artifacts':{'SOURCE_RUNTIME_IDENTITY','ARTIFACT_PROOF_MISSING'},
+    'files':{'OWNED_PRIVATE_FILES','FILE_PERMISSIONS'},
+    'private_identity':{'FULL_SIGNER_PROXY_IDENTITY','ACCOUNT_EVIDENCE_MISSING'},
+    'run_env':{'ENV_EXPECTATION_DIFFERS','ENV_UNAVAILABLE'},
+    'state_identity':{'JOURNAL_FROZEN_IDENTITY','EXPLICIT_NEW_STATE','STATE_IDENTITY_UNAVAILABLE'},
+    'single_executor':{'EXECUTOR_AND_LOCK','SERVICE_EVIDENCE_MISSING'},
+    'port':{'PORT_OWNER','SERVICE_EVIDENCE_MISSING'},
+    'service':{'EFFECTIVE_SERVICE_CONTRACT','SERVICE_EVIDENCE_MISSING'},
+    'balance':{'BALANCE_CAPITAL','ACCOUNT_EVIDENCE_MISSING'},
+    'allowance':{'EXPLICIT_ALLOWANCE','ACCOUNT_EVIDENCE_MISSING'},
+    'closed_only':{'CLOSED_ONLY','ACCOUNT_EVIDENCE_MISSING'},
+    'legacy_orders':{'EXTERNAL_ORDERS_REQUIRE_HANDOFF','ACCOUNT_EVIDENCE_MISSING'},
+    'region':{'JP_CLOSED_ONLY_EXCEPTION','REGION_POLICY','ACCOUNT_EVIDENCE_MISSING'},
+    'relayer_auth':{'RELAYER_IDENTITY','RELAYER_AUTH_REJECTED','AUTHENTICATED_GET_ONLY','ACCOUNT_EVIDENCE_MISSING'},
+    'proxy_execution':{'PINNED_PROXY_EXECUTION_CONFIGURATION','ACCOUNT_EVIDENCE_MISSING'},
+    'operator_authority':{'EXISTING_OPERATOR_SUDO'},
+}
+PUBLIC_REASONS={'OK','DEPENDENCY_UNKNOWN','PUBLIC_READ_UNAVAILABLE','MARKET_IDENTITY_MISMATCH','TOKEN_IDENTITY_INVALID',
+    'FEE_POLICY_UNPROVEN','MARKET_STATE_INVALID','POLITICAL_ELIGIBILITY_UNPROVEN','IN_PLAY_UNPROVEN',
+    'MARKET_CONSTRAINTS_INVALID','REWARDS_UNPROVEN','OPENING_INELIGIBLE','MARKET_INPUTS_UNPROVEN',
+    'BOOK_IDENTITY_CONSTRAINTS_OR_FRESHNESS','CHECK_DETAIL_UNAVAILABLE'}
+
+
+def public_details(rows):
+    rows=rows if isinstance(rows,dict) else {}
+    result={}
+    for key in PUBLIC:
+        row=rows.get(key,{})
+        row=row if isinstance(row,dict) else {}
+        status=row.get('status')
+        reason=row.get('reason_code')
+        result[key]=dict(status=status if status in ('PASS','BLOCKED','UNKNOWN') else 'UNKNOWN',
+            reason_code=reason if isinstance(reason,str) and reason in PUBLIC_REASONS else 'CHECK_DETAIL_UNAVAILABLE')
+    return result
+
+
 def fresh(value, *, seconds=60):
     from lp_v2.live_control.profiles import timestamp
     from datetime import datetime, UTC
@@ -20,39 +59,49 @@ def normalize_report(profile,report):
     report=report if isinstance(report,dict) else {}
     raw=report.get('checks',{})
     raw=raw if isinstance(raw,dict) else {}
-    compatible=type(report.get('schema_version')) is int and report['schema_version']==1 and fresh(report.get('as_of'))
+    protocol=type(report.get('schema_version')) is int and report['schema_version']==1
+    compatible=protocol and fresh(report.get('as_of'))
     for key in REQUIRED:
         row=raw.get(key,{})
         row=row if isinstance(row,dict) else {}
         status=row.get('status','UNKNOWN')
-        if not compatible or not fresh(row.get('as_of')):
-            status='UNKNOWN'
-        checks[key]=dict(status=status if status in ('PASS','FAIL') else 'UNKNOWN',reason='REMOTE_CHECK_'+key.upper())
+        reason=row.get('reason')
+        reason=reason if isinstance(reason,str) and reason in STEP_REASONS.get(key,set()) else 'CHECK_DETAIL_UNAVAILABLE'
+        if not protocol:
+            status='UNKNOWN';reason='REPORT_PROTOCOL_INVALID'
+        elif not compatible:
+            status='UNKNOWN';reason='REPORT_STALE_OR_MISSING_TIME'
+        elif not fresh(row.get('as_of')):
+            status='UNKNOWN';reason='CHECK_STALE_OR_MISSING_TIME'
+        checks[key]=dict(status=status if status in ('PASS','FAIL') else 'UNKNOWN',reason=reason)
     checks['public_market']=public_check(profile,report.get('public_market'))
     statuses=[check['status'] for check in checks.values()]
     return dict(schema_version=1,status='PASS' if all(s=='PASS' for s in statuses) else 'FAIL' if 'FAIL' in statuses else 'UNKNOWN',checks=checks)
 
 
 def public_check(profile,public):
-    status='UNKNOWN'
+    status='UNKNOWN';reason='PREFLIGHT_CAPABILITY_MISSING_OR_INVALID'
+    details={key:dict(status='UNKNOWN',reason_code='DEPENDENCY_UNKNOWN') for key in PUBLIC}
     try:
-        if (not isinstance(public,dict) or public.get('scope')!='public_market'
-                or public.get('code_sha')!=profile['release']['expected_sha']
-                or public.get('market')!=profile['trading']['market_condition_id']
-                or public.get('capital_usdc')!=profile['trading']['capital_usdc']
-                or not fresh(public.get('as_of'))):
+        if not isinstance(public,dict) or public.get('scope')!='public_market':
             raise ValueError()
+        if (public.get('code_sha')!=profile['release']['expected_sha'] or public.get('market')!=profile['trading']['market_condition_id']
+                or public.get('capital_usdc')!=profile['trading']['capital_usdc']):
+            reason='PREFLIGHT_IDENTITY_MISMATCH';raise ValueError()
+        if not fresh(public.get('as_of')):
+            reason='PREFLIGHT_STALE_OR_MISSING_TIME';raise ValueError()
         rows=public['checks']
         values=[rows[key]['status'] for key in PUBLIC]
-        if not all(v in ('PASS','BLOCKED','UNKNOWN') for v in values):
-            raise ValueError()
+        if not all(value in ('PASS','BLOCKED','UNKNOWN') for value in values):raise ValueError()
+        details=public_details(rows)
+        reason='PREFLIGHT_INCOMPLETE'
         if public['status']=='BLOCKED' and 'BLOCKED' in values:
-            status='FAIL'
-        elif public['status']=='PASS' and all(v=='PASS' for v in values):
-            status='PASS'
+            status='FAIL';reason='PUBLIC_MARKET_BLOCKED'
+        elif public['status']=='PASS' and all(value=='PASS' for value in values):
+            status='PASS';reason='PUBLIC_MARKET_READY'
     except Exception:
         pass
-    return dict(status=status,reason='PUBLIC_MARKET' if status!='UNKNOWN' else 'PREFLIGHT_CAPABILITY_MISSING_OR_INVALID')
+    return dict(status=status,reason=reason,checks=details)
 
 
 def check(profile):
@@ -71,8 +120,8 @@ def on(profile, *, action_id=None, window_end=None, prepare_env=False):
     path=directory/(action_id+'.json')
     if path.exists() or path.is_symlink():
         prior=read_json(path)
-        if prior.get('action')!='on': return dict(status='UNKNOWN',reason='ACTION_IDENTITY_MISMATCH')
-        started=request(prior['profile'],'result',action_id=action_id)
+        if prior.get('action')!='on' or prior.get('profile')!=profile: return dict(status='UNKNOWN',reason='ACTION_IDENTITY_MISMATCH')
+        started=request(prior['profile'],'result',action_id=action_id,expected_action='on')
         return verify_start(prior['profile'],started,action_id=action_id) if started.get('status')=='ACCEPTED' else dict(status='UNKNOWN',reason='REMOTE_OUTCOME_UNKNOWN')
     if not window_end or timestamp(window_end)<=datetime.now(UTC):
         return dict(status='UNKNOWN',reason='CONFIRMATION_REQUIRED')
@@ -93,7 +142,7 @@ def on(profile, *, action_id=None, window_end=None, prepare_env=False):
     try:
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     except FileExistsError:
-        return action_report(request(profile,'result',action_id=action_id))
+        return dict(status='UNKNOWN',reason='ACTION_PENDING')
     with os.fdopen(fd,'w') as output:
         json.dump(record,output); output.flush(); os.fsync(output.fileno())
     try:
@@ -154,6 +203,7 @@ def valid_round(profile,run_id,snapshot,started_at):
                 or row['run']['code_sha']!=profile['release']['expected_sha']
                 or row['run']['wallet_tail']!=profile['identity']['wallet_address'][-4:]
                 or len(markets)!=1 or markets[0]['condition_id']!=profile['trading']['market_condition_id']
+                or markets[0].get('eligible') is not True or markets[0].get('skip_reason','MISSING') is not None
                 or accounting['status']!='SUCCESS'
                 or not all(fresh(value) and timestamp(value)>timestamp(started_at) for value in
                            (row['as_of'],accounting['as_of'],row['freshness']['decision_as_of']))):
@@ -169,6 +219,18 @@ def action_report(raw):
         if type(raw.get(key)) is bool:
             result[key]=raw[key]
     result['drain']=raw.get('drain') if raw.get('drain') in ('PASS','FAIL','UNKNOWN') else 'UNKNOWN'
+    merges=raw.get('merge_history')
+    result['merge_history']=dict(status='UNKNOWN',reason='MERGE_HISTORY_MISSING')
+    if isinstance(merges,dict):
+        reason=merges.get('reason')
+        if merges.get('status')=='PASS' and reason=='KNOWN_MERGES_TERMINAL':
+            result['merge_history']=dict(status='PASS',reason=reason)
+        elif merges.get('status')=='UNKNOWN' and reason in ('MERGE_HISTORY_MISSING','MERGE_HISTORY_INVALID','MERGE_UNSETTLED'):
+            result['merge_history']=dict(status='UNKNOWN',reason=reason)
+        else:result['merge_history']=dict(status='UNKNOWN',reason='MERGE_HISTORY_INVALID')
+    if result['drain']=='PASS' and result['merge_history']['status']!='PASS':
+        result['drain']='UNKNOWN'
+        if result['status']=='PASS':result['status']='UNKNOWN'
     if isinstance(raw.get('inventory'),list):
         try:
             from lp_v2.live_control.host import inventory_report
@@ -195,15 +257,24 @@ def off(profile,*,action_id=None):
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     except FileExistsError:
         previous=read_json(path)
-        return action_report(request(previous['profile'],'result',action_id=action_id))
+        if (previous.get('action')!='off' or previous.get('profile')!=frozen or previous.get('run_id')!=record['run_id']):
+            return dict(status='UNKNOWN',reason='ACTION_IDENTITY_MISMATCH')
+        result=request(frozen,'result',action_id=action_id,expected_action='off',run_id=record['run_id'])
+        if result.get('action')!='off':
+            return dict(status='UNKNOWN',reason='ACTION_IDENTITY_MISMATCH')
+        return off_result(result,record['run_id'])
     with os.fdopen(fd,'w') as output:
         json.dump(dict(profile=frozen,run_id=record['run_id'],action='off'),output);output.flush();os.fsync(output.fileno())
     try:
         result=request(frozen,'off',run_id=record['run_id'],action_id=action_id)
-        safe=action_report(result)
-        if result.get('run_id')!=record['run_id'] or not (safe.get('executor_stopped') is True and safe.get('port_released') is True
-                and safe.get('readonly_restored') is True and safe['drain']=='PASS'):
-            safe['status']='UNKNOWN'
-        return safe
+        return off_result(result,record['run_id'])
     except Exception:
         return dict(status='UNKNOWN',reason='REMOTE_OUTCOME_UNKNOWN')
+
+
+def off_result(result,run_id):
+    safe=action_report(result)
+    if result.get('run_id')!=run_id or not (safe.get('executor_stopped') is True and safe.get('port_released') is True
+            and safe.get('readonly_restored') is True and safe['drain']=='PASS'):
+        safe['status']='UNKNOWN'
+    return safe
