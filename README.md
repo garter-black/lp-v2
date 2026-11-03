@@ -52,6 +52,19 @@ claimed. Browser visual QA remains separate from offline behavior verification.
 
 ## M4 explicit live entry (draft)
 
+Keep the read-only service running while checking a candidate market:
+
+```sh
+.venv/bin/lp-v2 preflight --market <condition_id> --capital-usdc 100 --code-sha <40-character-SHA>
+```
+
+This public GET-only command prints structured checks and exits 0 only for public PASS
+(2 for BLOCKED/UNKNOWN). Private identity, relayer and allowance remain NOT_CHECKED.
+PASS is not live authorization or private readiness. Switching and rollback remain
+explicit operator actions; see the [M4 guide](docs/M4_LIVE.md). Verified taker-only
+fee schedules preserve `feesEnabled=true` while maker plans carry explicit zero costs.
+Actual nonzero maker fill fees remain unsupported.
+
 The separate `run --live --market <condition_id>` path connects the existing engine
 and ledger to the pinned SDK through an append-only SQLite journal. It includes
 owned-order drain/stop, restart reconciliation, receipt-gated Proxy merge, and

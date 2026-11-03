@@ -18,7 +18,10 @@ The local lookup is `$XDG_CONFIG_HOME/lp-v2` or `~/.config/lp-v2`. The index is
 `profiles/<name>.json`. Directories must be owned 0700 and files owned regular
 0600, without symlinks. No setup or JSON editing is needed for an already-prepared
 complete v1 profile. `show` is local; `check` reads the selected target anew.
-Import timestamps are provenance, never current readiness evidence.
+Import timestamps and prepared-profile provenance descriptors are preserved as
+data, never instructions or current readiness evidence. The existing trusted-SSH,
+release/hash, L2 public-identity, file/service and status-server source labels are
+accepted without rewriting the user's profile.
 
 The delivery owner preserves configuration compatibility and backups. After a
 separately approved deployment, that owner verifies the exact deployed SHA and

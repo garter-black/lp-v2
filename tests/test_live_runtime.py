@@ -607,3 +607,38 @@ def test_drain_cancels_owned_active_despite_terminal_history(tmp_path,mode):
             assert ex.orders['order-1'].status == 'CANCELED'
             assert journal.events('stop_result')[-1][1]['reconciliation'] == 'UNKNOWN'
     assert 'synthetic-secret-never-log' not in str(journal.events())
+
+
+def test_fee_policy_change_blocks_new_orders(tmp_path):
+    import httpx
+    from lp_v2.readonly_sdk import ReadOnlySDK
+    from tests.test_readonly_sdk import external_sdk,taker_fee_wire,CID as market_id,AT as public_at
+    from lp_v2.live_runtime import LiveRunner
+    from lp_v2.live_sdk import LiveSDK
+    from lp_v2.journal import Journal
+    from tests.test_live_sdk import WALLET,SIGNER
+    wire=taker_fee_wire()
+    public,_=external_sdk([wire])
+    observations=ReadOnlySDK(public=public,http=httpx.Client(transport=httpx.MockTransport(
+        lambda r:httpx.Response(200,json={'in_play':False,'blocked':False,'country':'US'}))))
+    ex=Exchange(condition_id=market_id)
+    journal=Journal(tmp_path/'journal.sqlite')
+    live=LiveSDK(ex.sdk,journal,owner=OWNER,condition_id=market_id,token_ids=TOKENS,wallet=WALLET,signer=SIGNER)
+    runner=LiveRunner(RunConfig(D('100'),public_at),live,observations)
+    timeout_second_post(ex)
+    ex.cancel_unknown=True
+    try:
+        runner.step(public_at)
+        before=runner.ledger.snapshot()
+        assert len(ex.posts)==2 and len(before.pending)==1 and before.capital.total>D('0')
+        wire['feeSchedule']['takerOnly']=False
+        runner.step(public_at+timedelta(seconds=10))
+        after=runner.ledger.snapshot()
+        assert len(ex.posts)==2 and after.pending==before.pending
+        assert after.capital.total==before.capital.total
+        assert after.requests==before.requests
+        assert ex.sdk.cancel_order.call_count>=1
+        assert {c.kwargs['order_id'] for c in ex.sdk.cancel_order.call_args_list}=={'order-1'}
+        assert runner.snapshot()['markets'][0]['eligible'] is False
+    finally:
+        live.close(); observations.close()

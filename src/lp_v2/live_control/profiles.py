@@ -233,7 +233,14 @@ def validate(profile, *, complete=False):
         for key,value in metadata['sources'].items():
             if key not in {g+'.'+f for g,fs in FIELDS.items() for f in fs} or set(value)!={'source','observed_at'}:
                 raise ValueError()
-            if value['source'] not in ('synthetic-fixture','operator','target.run_env','target.release','target.unit','target.identity','target.ssh','target.files'):
+            if value['source'] not in (
+                    'synthetic-fixture','operator','target.run_env','target.release',
+                    'target.unit','target.identity','target.ssh','target.files',
+                    'local.trusted_ssh_and_live_strict_handshake',
+                    'target.current_release_and_four_source_hashes',
+                    'target.l2_public_identity',
+                    'target.lstat_and_service_environment',
+                    'target.systemd_show_and_hash_verified_status_server'):
                 raise ValueError()
             timestamp(value['observed_at'])
         if complete and missing:

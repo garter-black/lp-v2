@@ -36,75 +36,75 @@
     "updated_at": "2026-11-03T00:00:00+00:00",
     "sources": {
       "target.ssh_host": {
-        "source": "synthetic-fixture",
+        "source": "local.trusted_ssh_and_live_strict_handshake",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "target.host_key_sha256": {
-        "source": "synthetic-fixture",
+        "source": "local.trusted_ssh_and_live_strict_handshake",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "release.root": {
-        "source": "synthetic-fixture",
+        "source": "target.current_release_and_four_source_hashes",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "release.expected_sha": {
-        "source": "synthetic-fixture",
+        "source": "target.current_release_and_four_source_hashes",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "trading.market_condition_id": {
-        "source": "synthetic-fixture",
+        "source": "target.run_env",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "trading.capital_usdc": {
-        "source": "synthetic-fixture",
+        "source": "target.run_env",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "identity.wallet_address": {
-        "source": "synthetic-fixture",
+        "source": "target.l2_public_identity",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "identity.signer_address": {
-        "source": "synthetic-fixture",
+        "source": "target.l2_public_identity",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "identity.signature_type": {
-        "source": "synthetic-fixture",
+        "source": "target.l2_public_identity",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "files.signing_key": {
-        "source": "synthetic-fixture",
+        "source": "target.lstat_and_service_environment",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "files.l2_credentials": {
-        "source": "synthetic-fixture",
+        "source": "target.lstat_and_service_environment",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "files.relayer_credentials": {
-        "source": "synthetic-fixture",
+        "source": "target.lstat_and_service_environment",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "files.run_env": {
-        "source": "synthetic-fixture",
+        "source": "target.lstat_and_service_environment",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "files.state_dir": {
-        "source": "synthetic-fixture",
+        "source": "target.lstat_and_service_environment",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "services.user": {
-        "source": "synthetic-fixture",
+        "source": "target.systemd_show_and_hash_verified_status_server",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "services.readonly_unit": {
-        "source": "synthetic-fixture",
+        "source": "target.systemd_show_and_hash_verified_status_server",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "services.live_unit": {
-        "source": "synthetic-fixture",
+        "source": "target.systemd_show_and_hash_verified_status_server",
         "observed_at": "2026-11-03T00:00:00+00:00"
       },
       "services.status_port": {
-        "source": "synthetic-fixture",
+        "source": "target.systemd_show_and_hash_verified_status_server",
         "observed_at": "2026-11-03T00:00:00+00:00"
       }
     }

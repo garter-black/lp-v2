@@ -35,6 +35,16 @@ def test_existing_v1_default_needs_no_setup(config_home, profile, monkeypatch, c
     assert main(['live','profile','show','tokyo']) == 0
     shown=json.loads(capsys.readouterr().out)
     assert shown['profile']==profile and shown['missing']==[]
+    expected_sources={
+        'target':'local.trusted_ssh_and_live_strict_handshake',
+        'release':'target.current_release_and_four_source_hashes',
+        'trading':'target.run_env',
+        'identity':'target.l2_public_identity',
+        'files':'target.lstat_and_service_environment',
+        'services':'target.systemd_show_and_hash_verified_status_server',
+    }
+    for field,provenance in shown['profile']['metadata']['sources'].items():
+        assert provenance['source']==expected_sources[field.split('.')[0]]
     assert main(['live','check']) == 2
     capsys.readouterr()
     assert calls[-1]['profile']==profile and calls[-1]['action']=='check'

@@ -297,6 +297,16 @@ class LiveRunner:
                     self.observations.close()
 
 
+class MarketCheckFailure(ValueError):
+    """Only application-authored diagnostics, with a validated public identity."""
+    def __init__(self, market):
+        import re
+        self.market = market if isinstance(market,str) and re.fullmatch('0x[0-9a-fA-F]{64}',market) else 'UNKNOWN'
+        self.stage = 'market_check'
+        self.reason_code = 'MARKET_VALIDATION_UNAVAILABLE'
+        super().__init__(self.reason_code)
+
+
 def create_live_runner(config, *, public=None, http=None):
     import json
     from pathlib import Path
@@ -326,7 +336,10 @@ def create_live_runner(config, *, public=None, http=None):
     observations=ReadOnlySDK(public=public,http=http)
     client=journal=None
     try:
-        rows=observations.read_fixed_market(config.started_at,config.market)
+        try:
+            rows=observations.read_fixed_market(config.started_at,config.market)
+        except Exception:
+            raise MarketCheckFailure(config.market) from None
         tokens=tuple(t.token_id for t in rows[0]['plan'].market.tokens)
         with owner_file(config.relayer_credentials_file) as source:
             relayer_key=RelayerApiKey(**json.load(source))

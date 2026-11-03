@@ -48,6 +48,8 @@ def test_check_reports_independent_blockers(config_home,profile,monkeypatch,caps
 
 
 def test_missing_preflight_capability_is_not_pass(config_home,profile,monkeypatch,capsys):
+    from tests import test_readonly_sdk as public_fixtures
+    from tests.test_live_cli import public_preflight_world
     scenarios=[None,{},dict(scope='private',status='PASS')]
     for field,value in [('code_sha','b'*40),('market','0x'+'9'*64),('capital_usdc','99'),('as_of','2000-01-01T00:00:00+00:00'),('checks',{})]:
         item=ready_report(profile)['public_market']; item[field]=value; scenarios.append(item)
@@ -63,6 +65,42 @@ def test_missing_preflight_capability_is_not_pass(config_home,profile,monkeypatc
         assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
         capsys.readouterr()
         assert 'on' not in calls
+    # Consume actual integrated #14 CLI output, with only external HTTP/SSH faked.
+    for case,public_status,control_code in (
+            ('pass','PASS',0),('blocked','BLOCKED',2),('unknown','UNKNOWN',2)):
+        with monkeypatch.context() as patch:
+            patch.setattr(public_fixtures,'AT',datetime.now(UTC))
+            wire=public_fixtures.taker_fee_wire()
+            if case=='blocked': wire['feeSchedule']['takerOnly']=False
+            _,public=public_preflight_world(patch,wire,unavailable=case=='unknown')
+            import httpx
+            dispatch=httpx.HTTPTransport.handle_request
+            def timely_book(transport,request):
+                response=dispatch(transport,request)
+                if request.url.path=='/book':
+                    response.read(); data=response.json()
+                    data['timestamp']=str(int((public_fixtures.AT-timedelta(seconds=1)).timestamp()*1000))
+                    return httpx.Response(200,json=data)
+                return response
+            patch.setattr(httpx.HTTPTransport,'handle_request',timely_book)
+            try:
+                assert main(['preflight','--market',profile['trading']['market_condition_id'],
+                    '--capital-usdc',profile['trading']['capital_usdc'],
+                    '--code-sha',profile['release']['expected_sha']])==(0 if case=='pass' else 2)
+                actual=json.loads(capsys.readouterr().out)
+                assert actual['status']==public_status and actual['scope']=='public_market'
+                report=ready_report(profile); report['public_market']=actual
+                observed=[]
+                def target(request):
+                    observed.append(request['action']); return report
+                install_ssh(patch,target)
+                assert main(['live','check'])==control_code
+                consumed=json.loads(capsys.readouterr().out)
+                assert consumed['checks']['public_market']['status']=={
+                    'pass':'PASS','blocked':'FAIL','unknown':'UNKNOWN'}[case]
+                assert observed==['check']
+            finally:
+                public.close()
 
 
 def test_on_requires_current_confirmation(config_home,profile,monkeypatch,capsys):
