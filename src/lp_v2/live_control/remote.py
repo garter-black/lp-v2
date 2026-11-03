@@ -58,11 +58,14 @@ def request(profile, action, **payload):
         known=Path(temporary)/'known_hosts'
         # Match the actual presented host regardless of configured HostKeyAlias.
         known.write_text('* '+kind+' '+key+'\n'); known.chmod(0o600)
+        import shlex
+        from lp_v2.live_control.privileges import BOOTSTRAP
+        entry=shlex.join(['sudo','-n','--','/usr/bin/python3','-I','-c',BOOTSTRAP,root,profile['release'].get('expected_sha','-')])
         argv=['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','UpdateHostKeys=no',
               '-o','VerifyHostKeyDNS=no','-o','HostKeyAlgorithms=ssh-ed25519',
               '-o','GlobalKnownHostsFile=/dev/null','-o','UserKnownHostsFile='+str(known),
               '-o','ControlMaster=no','-o','ControlPath=none','-o','ConnectTimeout=10',
-              '--',host,'sudo -n -u lp-v2 -- '+root+'/current/.venv/bin/python -m lp_v2.live_control.host']
+              '--',host,entry]
         wire_profile=profile
         if action=='import':
             from copy import deepcopy

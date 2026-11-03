@@ -263,12 +263,22 @@ class ReadOnlySDK:
         def fact(status,reason):
             return dict(status=status,reason=reason,as_of=now.isoformat())
         result={name:fact('UNKNOWN','ACCOUNT_EVIDENCE_MISSING') for name in
-                ('balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge')}
+                ('balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge','proxy_execution')}
         c=self.__credentials
         if (c is None or c.signer_address.lower()!=identity['signer_address'].lower()
                 or c.wallet_address.lower()!=identity['wallet_address'].lower()
                 or type(c.signature_type) is not int or c.signature_type!=1):
             return result
+        try:
+            from importlib.metadata import version
+            from polymarket._internal.wallet import classify_wallet_type
+            supported=(version('polymarket-client')=='0.2.0' and PRODUCTION.chain_id==137
+                and PRODUCTION.relayer_url=='https://relayer-v2.polymarket.com'
+                and classify_wallet_type(signer=c.signer_address,wallet=c.wallet_address,
+                    config=PRODUCTION.wallet_derivation)=='POLY_PROXY')
+            result['proxy_execution']=fact('PASS' if supported else 'FAIL','PINNED_PROXY_EXECUTION_CONFIGURATION')
+        except Exception:
+            pass
         try:
             raw=self.__account_get('/balance-allowance',now,dict(asset_type='COLLATERAL',signature_type='1'))
             data=BalanceAllowance.model_validate(raw)

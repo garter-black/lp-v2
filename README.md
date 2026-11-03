@@ -81,7 +81,8 @@ The new `lp-v2 live profile show tokyo` and `lp-v2 live check` consume an existi
 v1 default profile. Setup and edits save local expectations; on/off add explicit
 confirmation, same-run readback and owned drain around the existing executor.
 See the [live-control operator guide](docs/operations/live-control.md) for commands,
-installation prerequisites, recovery and the required UNKNOWN account-proof gap.
+installation prerequisites, recovery and concrete required startup proofs.
+Actual submitted/confirmed merge remains separately NOT_RUN runtime acceptance.
 These offline capabilities do not claim deployment or target readiness.
 
 Do not place trades or deploy until Ray explicitly authorizes each milestone.

@@ -2,7 +2,7 @@
 from lp_v2.live_control.remote import request
 
 
-REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge')
+REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','proxy_execution','operator_authority')
 PUBLIC=('market_identity','token_identity','fees','state','political','in_play','rewards','constraints','books','opening_eligibility','market_inputs')
 
 

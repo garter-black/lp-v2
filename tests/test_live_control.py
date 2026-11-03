@@ -6,10 +6,10 @@ import subprocess
 import pytest
 from lp_v2.cli import main
 from tests.test_live_control_profiles import profile, config_home, known_ssh
-from tests.test_live_control_host import target
+from tests.test_live_control_host import target, combined_world, operator_os
 
 PUBLIC=('market_identity','token_identity','fees','state','political','in_play','rewards','constraints','books','opening_eligibility','market_inputs')
-REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge')
+REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','proxy_execution','operator_authority')
 
 
 def ready_report(profile):
@@ -177,6 +177,7 @@ def test_preparation_is_explicit_and_preserves_secrets(target,monkeypatch):
     import hashlib
     from pathlib import Path
     from tests.test_live_control_host import call_host
+    monkeypatch.setattr(subprocess,'run',lambda argv,**kw: subprocess.CompletedProcess(argv,0,'EnvironmentFiles='+target['files']['run_env'],'') if argv[:3]==['systemctl','show','lp-v2-live.service'] else pytest.fail('no privileged mutation during prepare'))
     path=Path(target['files']['run_env']); path.write_text('LP_V2_CAPITAL_USDC=100\nUNRELATED_SECRET=SECRET_KEEP\n')
     before=path.read_bytes(); signing=Path(target['files']['signing_key']).read_bytes()
     target['trading']['capital_usdc']='80'
@@ -215,6 +216,8 @@ def off_boundary(target,monkeypatch,*,failure=None):
     state=Path(target['files']['state_dir']); calls=[]
     def command(argv,**kw):
         calls.append(argv)
+        if argv[:2]==['systemctl','show']:
+            return subprocess.CompletedProcess(argv,0,'MainPID=0\nActiveState=inactive','')
         if argv[:3]==['systemctl','stop','lp-v2-live.service']:
             result=dict(run_id='0'*32 if failure=='old' else 'f'*32,exit_code=1 if failure=='nonzero' else 0)
             if failure!='missing':
@@ -335,3 +338,43 @@ def test_reports_never_include_secret_sentinels(config_home,profile,monkeypatch,
     (config_home/'profiles/tokyo.json').write_text(json.dumps(bad))
     assert main(['live','profile','show','tokyo'])==2
     assert sentinel not in str(capsys.readouterr())
+
+
+def test_controller_and_real_helper_complete_valid_start_stop(combined_world,monkeypatch,capsys):
+    world=combined_world
+    monkeypatch.setattr('builtins.input',lambda _: 'on')
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==0
+    started=json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert started['verified_rounds']==2 and started['runtime_acceptance']['merge']['status'] in ('NOT_RUN','UNKNOWN')
+    assert world.mutations==[('stop','lp-v2.service'),('start','lp-v2-live.service')]
+    assert main(['live','off'])==0
+    stopped=json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert stopped['executor_stopped'] is True and stopped['drain']=='PASS' and stopped['readonly_restored'] is True
+    assert stopped['runtime_acceptance']['merge']['status'] in ('NOT_RUN','UNKNOWN')
+    assert world.mutations==[('stop','lp-v2.service'),('start','lp-v2-live.service'),('stop','lp-v2-live.service'),('start','lp-v2.service')]
+    assert all(request.method=='GET' for request in world.http_requests)
+    assert not any(request.url.path in ('/submit','/transaction') for request in world.http_requests)
+
+
+def test_missing_startup_proof_still_blocks_before_mutation(combined_world,monkeypatch,capsys):
+    from pathlib import Path
+    import importlib.metadata
+    world=combined_world
+    credentials=Path(world.profile['files']['l2_credentials']);original=credentials.read_bytes()
+    env=Path(world.profile['files']['run_env']);original_env=env.read_bytes()
+    for scenario,key in [('auth','relayer_auth'),('allowance','allowance'),('identity','private_identity'),
+                         ('proxy','proxy_execution'),('market_freshness','public_market'),('account_freshness','relayer_auth')]:
+        with monkeypatch.context() as boundary:
+            world.http_overrides.clear();world.stale_public=False;world.advance_on_relayer=False
+            if scenario=='auth':world.http_overrides['/transactions']=(401,{'error':'synthetic'})
+            if scenario=='allowance':world.http_overrides['/balance-allowance']=(200,{'balance':'200000000','allowances':{}})
+            if scenario=='identity':
+                changed=json.loads(original);changed['wallet_address']='0x'+'9'*40;credentials.write_text(json.dumps(changed))
+            if scenario=='proxy':boundary.setattr(importlib.metadata,'version',lambda package:'0.3.0')
+            if scenario=='market_freshness':world.stale_public=True
+            if scenario=='account_freshness':world.advance_on_relayer=True
+            assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+            report=json.loads(capsys.readouterr().out.splitlines()[-1])
+            assert report['checks'][key]['status'] in ('UNKNOWN','FAIL'),report
+            assert world.mutations==[] and world.readonly is True and env.read_bytes()==original_env
+            credentials.write_bytes(original)

@@ -135,9 +135,23 @@ Both caller and target need this release. The target also needs the #14 public
 `preflight` capability. A complete old release without that capability fails
 closed. SSH uses existing ED25519 trust, verifies the profile pin before a target
 command, and isolates that exact already-trusted key for the connection; it never
-accepts a new key. The helper is invoked as `lp-v2` using existing noninteractive
-sudo authority; that user needs read access to its protected files and separately
-provisioned narrow systemd control authority. The tool grants neither authority.
+accepts a new key. The operator must already have noninteractive sudo authority.
+A literal system-Python bootstrap verifies the exact release selector, COMPLETE,
+interpreter and release tree are immutable and root-owned before importing the
+privileged release code. It refuses application-owned or writable executable
+paths; it does not change ownership or install authority. The bootstrap and
+helper require the existing system interpreter and the installed release Python.
+
+The short-lived Linux helper drops real/effective UID and GID to the fixed lp-v2
+account, clears supplementary groups and performs application reads/writes with
+that identity. Only allowlisted systemctl show/start/stop calls for the two fixed
+units temporarily regain the saved operator privilege, with a fixed environment.
+Process identity is checked under the service UID, and a foreign/mismatched
+executor is refused before stopping a unit. Private files remain 0600 and state
+0700 owned by lp-v2. A missing sudo/service identity or invalid path blocks before
+unit/env mutation. No service-account sudo/polkit grant, new policy, daemon,
+chmod/chown or capability installation is performed. Each helper invocation
+handles one request; no privileged background process remains.
 
 Check verifies installed source against the pinned repository object and release,
 file permissions, environment, journal identity, effective services and port
@@ -148,11 +162,21 @@ approved service configuration must already meet the contract.
 Authenticated L2 GETs prove balance, explicit spender allowances, closed-only
 state and order observations independently. Authenticated relayer `/transactions`
 GET proves key authentication only; public `/deployed` cannot substitute for it.
-This checker does **not** prove submit/merge readiness. That separate required
-item remains UNKNOWN, so a real `on` is refused until authoritative proof is
-available under an approved contract. No new transaction is sent to probe it.
-Offline success scenarios model complete external evidence; they are not a claim
-that any actual account is ready.
+Required pre-start Proxy configuration is a separate concrete fact: signature
+type 1, complete signer/derived Proxy identity, the pinned SDK and supported
+production chain/relayer/wallet-derivation configuration must agree. This proof
+and authenticated GET are both required, along with every fresh public, account,
+allowance, release, state, service and operator-authority check. Missing or UNKNOWN
+required proof still refuses on; there is no bypass flag.
+
+An actual submitted/confirmed merge belongs to runtime acceptance in issue #5.
+CLI check/on/off report `runtime_acceptance.merge.status=NOT_RUN`; account evidence
+retains actual merge UNKNOWN. Neither becomes PASS from a supported configuration,
+authentication or successful startup. No order, merge, approval or wallet-creation
+request is sent to probe readiness. Offline combined-route tests run the actual
+controller, serialization, dispatcher, public preflight, SDK parser/auth and
+process-lock logic with external OS/systemd/HTTP/clock facts replaced. They are
+not evidence of any actual account or installed target's readiness.
 
 ## Approved SOP block mapping
 
@@ -166,8 +190,8 @@ must also compare the current private operator SOP before field acceptance.
 | Config/state | Exact market/capital/SHA; original 0700 state/journal identity | Refuse drift; preserve all state |
 | Executor/handoff | Existing process lock, service MainPID and port owner; authenticated orders | Busy/conflict/unknown blocks new start |
 | Public market | #14 scope/identity/time and every required public check | Missing capability UNKNOWN; no duplicate fee policy |
-| Private account | Balance, explicit allowances, closed-only, region and relayer auth | Missing evidence UNKNOWN; auth never proves merge |
-| Service/preparation | Effective start/stop paths, user, env, conflicts, restart/boot policy | Only confirmed env changes; no install or policy changes |
+| Private account | Balance, explicit allowances, closed-only, region, relayer auth and concrete supported Proxy configuration | Missing required evidence UNKNOWN blocks; runtime merge remains NOT_RUN |
+| Service/preparation | Existing operator authority, immutable release, effective unit paths, user, env, conflicts, restart/boot policy | Service-owned app state; finite privileged unit actions; no permission install |
 | Switch | Same revision/facts/window before and after confirmation, target mutation lock | No unconfirmed mutation; action receipt before start |
 | Live readback | Two fresh advancing same-run snapshots with accounting SUCCESS | Bounded observation; owned drain/read-only rollback |
 | Stop/drain | Existing ExecStop; matching process result + fresh successful journal drain | Preserve failed/old/missing results and residuals |

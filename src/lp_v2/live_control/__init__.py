@@ -42,6 +42,8 @@ def main(argv):
         else:
             result=workflow.check(profiles.load(args.profile))
             code=0 if result.get('status')=='PASS' else 2
+        if args.command in ('check','on','off'):
+            result['runtime_acceptance']={'merge':{'status':'NOT_RUN','reason':'REQUIRES_RUNTIME_TRANSACTION_EVIDENCE'}}
         print(json.dumps(result))
         return code
     except Exception as error:

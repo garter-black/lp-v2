@@ -12,11 +12,15 @@ def fact(status, reason):
 
 
 def run(argv, timeout=15):
+    if argv[:1]==['systemctl']:
+        from lp_v2.live_control.privileges import systemctl
+        return systemctl(argv,timeout=timeout)
     return subprocess.run(argv,text=True,capture_output=True,timeout=timeout,check=False)
 
 
 def check(profile):
-    checks={}
+    from lp_v2.live_control.privileges import operator_ready
+    checks={'operator_authority':fact('PASS' if operator_ready() else 'UNKNOWN','EXISTING_OPERATOR_SUDO')}
     root=Path(profile['release']['root']); expected=profile['release']['expected_sha']
     try:
         current=(root/'current').resolve(strict=True)
@@ -48,7 +52,7 @@ def check(profile):
 def account_checks(profile):
     from lp_v2.readonly_sdk import L2Credentials, ReadOnlySDK
     from datetime import datetime, UTC
-    names=('private_identity','balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge')
+    names=('private_identity','balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge','proxy_execution')
     result={name:fact('UNKNOWN','ACCOUNT_EVIDENCE_MISSING') for name in names}
     try:
         credentials=L2Credentials(**read_json(profile['files']['l2_credentials']))
@@ -155,6 +159,14 @@ def off(request):
     process=read_json(state/'process.json')
     if process['run_id']!=record['run_id']:
         return dict(status='UNKNOWN',reason='PROCESS_RUN_MISMATCH')
+    live=system_properties(profile['services']['live_unit'])
+    if live.get('MainPID')!='0':
+        from lp_v2.live_process import process_identity
+        identity=process_identity(process['pid'])
+        if live.get('MainPID')!=str(process['pid']) or identity is None or identity!=process['identity']:
+            return dict(status='UNKNOWN',reason='PROCESS_IDENTITY_UNVERIFIED')
+    elif not process_stopped(profile):
+        return dict(status='UNKNOWN',reason='PROCESS_IDENTITY_UNVERIFIED')
     result=run(['systemctl','stop',profile['services']['live_unit']],timeout=160)
     stopped=process_stopped(profile)
     port=run(['ss','-H','-ltn','sport = :8765'])
@@ -200,6 +212,10 @@ def mutate(request):
         return dict(status='UNKNOWN',reason='ACTION_INVALID')
     if action in ('on','prepare') and not confirmed(request,action):
         return dict(status='UNKNOWN',reason='CONFIRMATION_REQUIRED')
+    from lp_v2.live_control.privileges import operator_ready
+    if not operator_ready():
+        return dict(status='UNKNOWN',reason='OPERATOR_AUTHORITY_UNAVAILABLE')
+    validate_mutation_paths(request)
     state=Path(profile['files']['state_dir']);secure_directory(state)
     fd=os.open(state/'control.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
     try:
@@ -453,19 +469,39 @@ def safe_summary(raw):
         return dict(mode='UNKNOWN')
 
 
+
+def validate_mutation_paths(request):
+    profile=request['profile']
+    state=Path(profile['files']['state_dir']);secure_directory(state)
+    paths=[state]
+    if request['action']=='prepare':paths.append(Path(profile['files']['run_env']))
+    for path in paths:
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+            raise ValueError('symlink path refused')
+    if request['action']=='prepare':
+        with owner_file(profile['files']['run_env']):pass
+        effective=system_properties('lp-v2-live.service')
+        if profile['files']['run_env'] not in effective.get('EnvironmentFiles',''):
+            raise ValueError('environment reference differs')
+
+
 def main(*,stdin=None,stdout=None):
     stdin=stdin or sys.stdin; stdout=stdout or sys.stdout
     try:
         request=json.loads(stdin.read(131073))
         if type(request.get('schema_version')) is not int or request['schema_version']!=1 or request.get('action') not in ('check','prepare','off','result','on','observe','import'):
             raise ValueError()
+        if set(request)-{'schema_version','action','profile','action_id','confirmation','window_end','changes','run_id'}:
+            raise ValueError()
         profile=request['profile']
         if request['action']!='import': validate(profile,complete=True)
-        if request['action']=='import': result=import_profile(profile)
-        elif request['action']=='check': result=check(profile)
-        elif request['action']=='result': result=action_result(request)
-        elif request['action']=='observe': result=observe(request)
-        else: result=mutate(request)
+        from lp_v2.live_control.privileges import application_identity
+        with application_identity():
+            if request['action']=='import': result=import_profile(profile)
+            elif request['action']=='check': result=check(profile)
+            elif request['action']=='result': result=action_result(request)
+            elif request['action']=='observe': result=observe(request)
+            else: result=mutate(request)
     except Exception:
         result=dict(schema_version=1,status='UNKNOWN',reason='HELPER_REQUEST_INVALID')
     print(json.dumps(result),file=stdout)
