@@ -4,16 +4,17 @@ from decimal import Decimal
 
 
 def inventory_handoff(profile,balances):
-    from lp_v2.live_control.host import fact,journal_rows,merge_history_report
+    from lp_v2.live_control.host import fact,journal_rows,journal_present,merge_history_report
     from lp_v2.live_control.profiles import read_json,timestamp
     from lp_v2.live_control.workflow import fresh
     from lp_v2.models import Position,Order,OrderStatus
+    from lp_v2.live_control.identity import same_identity
     try:
         market=profile['trading']['market_condition_id'];tokens=balances['token_ids'];quantities=balances['quantities']
         if (not fresh(balances['as_of']) or balances['condition_id']!=market or len(tokens)!=2 or len(set(tokens))!=2
                 or set(quantities)!=set(tokens) or any(not money(q) for q in quantities.values())):raise ValueError()
         state=Path(profile['files']['state_dir'])
-        if not (state/'journal.sqlite').exists():
+        if not journal_present(profile):
             if any((state/name).exists() for name in ('live-control-run.json','process.json','stop-result.json')):raise ValueError()
             zero=all(q==0 for q in quantities.values())
             return fact('PASS' if zero else 'UNKNOWN','NEW_STATE_ZERO_CONDITIONAL_BALANCES' if zero else 'CONDITIONAL_INVENTORY_UNMATCHED')
@@ -28,7 +29,7 @@ def inventory_handoff(profile,balances):
         if (not isinstance(run_id,str) or not re.fullmatch('[0-9a-f]{32}',run_id)
                 or process['run_id']!=run_id or final['run_id']!=run_id
                 or type(process['pid']) is not int or process['pid']<=1 or not isinstance(process['identity'],str) or not process['identity']
-                or control['profile']['identity']!=profile['identity']
+                or not same_identity(control['profile']['identity'],profile['identity'])
                 or control['profile']['trading']['market_condition_id']!=market
                 or Path(control['profile']['files']['state_dir']).resolve()!=state.resolve()
                 or type(final['exit_code']) is not int or final['exit_code']!=0):raise ValueError()

@@ -307,7 +307,7 @@ def combined_world(target, config_home, monkeypatch):
         elif path.startswith('/markets/'):data={'in_play':False}
         elif path=='/balance-allowance' and request.url.params.get('asset_type')=='CONDITIONAL':
             assert dict(request.url.params)==dict(asset_type='CONDITIONAL',signature_type='1',token_id=request.url.params['token_id'])
-            assert request.headers['POLY_ADDRESS']==target['identity']['signer_address']
+            assert request.headers['POLY_ADDRESS'].lower()==target['identity']['signer_address'].lower()
             token=request.url.params['token_id'];assert token in ('101','102')
             value=world.conditional.get(token)
             if token=='102' and getattr(world,'conditional_advance',False):world.clock+=timedelta(seconds=120)
@@ -572,3 +572,53 @@ def test_check_requires_conditional_inventory_handoff(combined_world,monkeypatch
     assert {r.url.params['token_id'] for r in reads}=={'101','102'}
     assert all(r.method=='GET' and r.url.params['signature_type']=='1' for r in reads)
     assert world.mutations==[]
+
+
+def test_new_state_rejects_orphaned_journal_history(combined_world,monkeypatch,capsys):
+    from lp_v2.cli import main
+    import stat
+    world=combined_world;profile=world.profile;state=Path(profile['files']['state_dir'])
+    env=Path(profile['files']['run_env']);env_before=env.read_bytes()
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    def snapshot():
+        rows={}
+        for path in state.rglob('*'):
+            info=path.lstat();value=None
+            if stat.S_ISLNK(info.st_mode):value=('link',os.readlink(path))
+            elif stat.S_ISREG(info.st_mode):
+                try:value=('bytes',path.read_bytes())
+                except OSError as error:value=('unreadable',type(error).__name__)
+            rows[str(path.relative_to(state))]=(info.st_ino,info.st_mode,info.st_size,value)
+        return rows
+    def refused():
+        before=snapshot();count=len(world.mutations)
+        assert main(['live','check'])==2
+        report=json.loads(capsys.readouterr().out)
+        assert report['checks']['inventory_handoff']['status']=='UNKNOWN'
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        capsys.readouterr()
+        assert snapshot()==before and len(world.mutations)==count and world.readonly is True
+        assert env.read_bytes()==env_before and not env.with_name(env.name+'.bak').exists()
+    assert main(['live','check'])==0;capsys.readouterr();assert snapshot()=={}
+    for suffix in ('-wal','-shm','-journal'):
+        for form in ('empty','malformed','unreadable','dangling'):
+            artifact=state/('journal.sqlite'+suffix)
+            if form=='dangling':artifact.symlink_to(state/'missing-history')
+            else:
+                artifact.write_bytes(b'' if form=='empty' else b'interrupted-history-not-a-valid-sqlite-sidecar')
+                artifact.chmod(0o000 if form=='unreadable' else 0o600)
+            refused()
+            assert not (state/'journal.sqlite').exists()
+            # Only synthetic fixture setup removes its own artifact; production never does.
+            if not artifact.is_symlink():artifact.chmod(0o600)
+            artifact.unlink()
+    assert main(['live','check'])==0;capsys.readouterr();assert snapshot()=={}
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==0;capsys.readouterr()
+    assert main(['live','off'])==0;capsys.readouterr()
+    closed=snapshot()
+    assert main(['live','check'])==0;capsys.readouterr();assert snapshot()==closed
+    for suffix in ('-wal','-journal'):
+        artifact=state/('journal.sqlite'+suffix)
+        artifact.write_bytes(b'hot-or-unsettled-history');artifact.chmod(0o600)
+        refused();artifact.unlink()
+    assert main(['live','check'])==0;capsys.readouterr();assert snapshot()==closed

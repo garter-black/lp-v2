@@ -139,14 +139,34 @@ def process_stopped(profile):
         return False
 
 
+def journal_present(profile):
+    """Do not mistake interrupted sidecars for new state or recover them on read."""
+    import os
+    path=Path(profile['files']['state_dir'])/'journal.sqlite'
+    try:
+        path.lstat();present=True
+    except FileNotFoundError:
+        present=False
+    for suffix in ('-wal','-shm','-journal'):
+        sidecar=path.with_name(path.name+suffix)
+        try:sidecar.lstat()
+        except FileNotFoundError:continue
+        if not present:raise ValueError('orphan journal history')
+        # owner_file refuses symlinks, unreadable/foreign modes and non-regular
+        # files without following a sidecar into unrelated data.
+        with owner_file(sidecar) as source:
+            if suffix in ('-wal','-journal') and os.fstat(source.fileno()).st_size:
+                raise ValueError('unsettled journal history')
+    return present
+
+
 def journal_rows(profile,kind=None):
     import sqlite3
     from lp_v2.journal import decode
     path=Path(profile['files']['state_dir'])/'journal.sqlite'
     # No Journal constructor, pragmas or database creation on observational reads.
+    if not journal_present(profile):raise ValueError('journal missing')
     with owner_file(path): pass
-    wal=path.with_name(path.name+'-wal')
-    if wal.exists() and wal.stat().st_size:raise ValueError('unsettled journal writer')
     db=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)
     try:
         if kind is None:
@@ -215,6 +235,7 @@ def merge_history_report(profile,merges):
 
 def off(request):
     from lp_v2.live_control.profiles import timestamp
+    from lp_v2.live_control.identity import matching_tail
     profile=request['profile']; state=Path(profile['files']['state_dir'])
     record=read_json(state/'live-control-run.json')
     if record['profile']!=profile or record['run_id']!=request.get('run_id'):
@@ -260,7 +281,7 @@ def off(request):
                     response=client.get('http://127.0.0.1:8765/summary'); response.raise_for_status(); row=response.json()
                 restored=(row['mode']=='read_only' and fresh(row['as_of']) and row['run']['code_sha']==profile['release']['expected_sha']
                           and row['capital_usdc']==profile['trading']['capital_usdc']
-                          and row['run']['wallet_tail']==profile['identity']['wallet_address'][-4:])
+                          and matching_tail(row['run']['wallet_tail'],profile['identity']['wallet_address']))
             except Exception:
                 pass
     return dict(status='PASS' if result.returncode==0 and stopped and released and drained=='PASS' and restored else 'UNKNOWN',
@@ -383,7 +404,7 @@ def filesystem_checks(profile):
     state=Path(profile['files']['state_dir'])
     try:
         secure_directory(state)
-        if (state/'journal.sqlite').exists():
+        if journal_present(profile):
             identities=journal_rows(profile,'identity')
             good=bool(identities) and all(row['owner']=='lp-v2:'+profile['identity']['wallet_address'].lower()
                 and row['condition_id']==profile['trading']['market_condition_id'] for _,row in identities)

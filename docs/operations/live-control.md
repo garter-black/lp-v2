@@ -193,6 +193,9 @@ After start, protected MainPID identity and actual `/proc` arguments must match 
 checked invocation. Full signer/Proxy/L2 identity is derived from the actual file
 references. Pre/post file owner/mode/inode metadata and derived public identity
 must remain stable; raw secrets and hashes of secret material are not reported.
+Full Ethereum signer/Proxy addresses compare by their complete hex identity across
+valid case presentations. Saved profile bytes, revisions, confirmations and action
+receipts remain exact; equivalent account spelling does not authorize profile drift.
 This is a trusted single-host operator proof, not attestation against adversarial
 same-UID file replacement or a compromised root account.
 
@@ -213,8 +216,11 @@ orders/merges and complete finite nonnegative Position quantities/costs exactly
 matching both fresh balances. Missing, foreign, interrupted or unmatched history
 is UNKNOWN. Checks read journal snapshots without constructing a writing Journal,
 replaying a ledger, adopting inventory or changing allowances. Unsettled WAL
-history also remains UNKNOWN. All handoff/account/executor facts are read again
-inside the target control lock before stopping readonly. Explicit environment
+history also remains UNKNOWN. Orphan WAL/SHM/rollback sidecars, including empty
+or dangling artifacts without the main database, cannot be treated as new state.
+A nonempty rollback journal alongside the database also blocks immutable reads;
+check never recovers, checkpoints, deletes or replaces such history. All
+handoff/account/executor facts are read again inside the target control lock before stopping readonly. Explicit environment
 preparation also repeats the handoff proofs under that lock before writing run.env.
 
 Authenticated L2 GETs prove balance, explicit spender allowances, closed-only

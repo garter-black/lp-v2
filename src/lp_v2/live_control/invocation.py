@@ -88,7 +88,8 @@ def file_snapshot(profile):
             or set(relayer)!={'key','address'} or not isinstance(relayer['key'],str) or not relayer['key']
             or relayer['address'].lower()!=signer.lower()):raise ValueError('derived identity differs')
     identity=dict(signer_address=signer,wallet_address=credentials.wallet_address,signature_type=1)
-    if identity!=profile['identity']:raise ValueError('full frozen identity differs')
+    from lp_v2.live_control.identity import same_identity
+    if not same_identity(identity,profile['identity']):raise ValueError('full frozen identity differs')
     for key,before in metadata.items():
         with owner_file(profile['files'][key]) as source:
             if before!=stamp(os.fstat(source.fileno())):raise ValueError('file continuity unavailable')

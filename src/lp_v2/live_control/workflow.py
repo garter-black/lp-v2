@@ -197,13 +197,14 @@ def verify_start(profile,started,*,action_id):
 
 def valid_round(profile,run_id,snapshot,started_at):
     from lp_v2.live_control.profiles import timestamp
+    from lp_v2.live_control.identity import same_identity,matching_tail
     try:
         row=snapshot['summary']; markets=row['markets']; accounting=row['accounting']
         if (snapshot['run_id']!=run_id or snapshot['executor_running'] is not True or snapshot['readonly_stopped'] is not True
-                or snapshot['identity']!=profile['identity'] or row['mode']!='live'
+                or not same_identity(snapshot['identity'],profile['identity']) or row['mode']!='live'
                 or row['capital_usdc']!=profile['trading']['capital_usdc']
                 or row['run']['code_sha']!=profile['release']['expected_sha']
-                or row['run']['wallet_tail']!=profile['identity']['wallet_address'][-4:]
+                or not matching_tail(row['run']['wallet_tail'],profile['identity']['wallet_address'])
                 or len(markets)!=1 or markets[0]['condition_id']!=profile['trading']['market_condition_id']
                 or markets[0].get('eligible') is not True or markets[0].get('skip_reason','MISSING') is not None
                 or accounting['status']!='SUCCESS'

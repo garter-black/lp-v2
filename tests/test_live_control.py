@@ -489,3 +489,69 @@ def test_handoff_rechecked_under_lock_before_switch(combined_world,monkeypatch,c
             assert report['status']!='PASS' and held[-1]==scenario
             assert world.mutations==[] and world.readonly is True and env.read_bytes()==before
             assert sum(request['action'] in ('on','prepare') for request in world.requests)==len(held)
+
+
+@pytest.mark.parametrize('presentation',('lower','checksum','mixed'))
+def test_valid_identity_case_variants_need_no_profile_edits(combined_world,config_home,monkeypatch,capsys,presentation):
+    import httpx
+    from pathlib import Path
+    from lp_v2.journal import Journal
+    world=combined_world;profile=world.profile
+    checksum=copy.deepcopy(profile['identity'])
+    # All representations preserve the same independent 20-byte Ethereum identities.
+    assert checksum['signer_address']=='0x4a62316623ad457F02cDC5D997deD67a383EC569'
+    assert checksum['wallet_address']=='0xa061c806B6F06b2078DC0158F081E09C73aBEC8A'
+    def style(address,kind):
+        return address.lower() if kind=='lower' else '0x'+address[2:].swapcase() if kind=='mixed' else address
+    for key in ('signer_address','wallet_address'):profile['identity'][key]=style(checksum[key],presentation)
+    credentials=Path(profile['files']['l2_credentials']);l2=json.loads(credentials.read_text())
+    for key in ('signer_address','wallet_address'):l2[key]=style(checksum[key],'mixed' if presentation!='mixed' else 'lower')
+    credentials.write_text(json.dumps(l2));credential_bytes=credentials.read_bytes()
+    saved=config_home/'profiles/tokyo.json';saved.write_text(json.dumps(profile))
+    protected={p:p.read_bytes() for p in (saved,config_home/'config.json',credentials)}
+    state=Path(profile['files']['state_dir']);started=world.clock-timedelta(seconds=30);at=world.clock-timedelta(seconds=10)
+    prior=copy.deepcopy(profile)
+    for key in ('signer_address','wallet_address'):prior['identity'][key]=style(checksum[key],'checksum' if presentation!='checksum' else 'lower')
+    record=dict(profile=prior,run_id='f'*32,started_at=started.isoformat(),journal_seq=1)
+    for name,payload in [('live-control-run.json',record),('process.json',dict(run_id='f'*32,pid=45678,identity='synthetic-boot:123')),('stop-result.json',dict(run_id='f'*32,exit_code=0))]:
+        path=state/name;path.write_text(json.dumps(payload));path.chmod(0o600)
+    journal=Journal(state/'journal.sqlite')
+    journal.append('identity',dict(owner='lp-v2:'+checksum['wallet_address'].lower(),condition_id=profile['trading']['market_condition_id'],token_ids=('101','102')))
+    journal.append('occupation',dict(at=started))
+    journal.append('stop_result',dict(at=at,exit_code=0,orders=[],pending=[],positions=[],merges=[],inventory=[],reconciliation='SUCCESS',accounting_as_of=at))
+    journal.close();(state/'journal.sqlite').chmod(0o600)
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    # Runtime status uses the actual credential's presentation, independent of profile.
+    dispatch=httpx.HTTPTransport.handle_request
+    def actual_tail(transport,request):
+        response=dispatch(transport,request)
+        if request.url.path=='/summary':
+            data=response.json();data['run']['wallet_tail']=l2['wallet_address'][-4:]
+            return httpx.Response(200,json=data,request=request)
+        return response
+    monkeypatch.setattr(httpx.HTTPTransport,'handle_request',actual_tail)
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==0
+    report=json.loads(capsys.readouterr().out.splitlines()[-1]);assert report['verified_rounds']==2
+    assert main(['live','off'])==0
+    report=json.loads(capsys.readouterr().out.splitlines()[-1]);assert report['drain']=='PASS' and report['readonly_restored'] is True
+    assert all(path.read_bytes()==value for path,value in protected.items())
+    count=len(world.mutations)
+    # Semantic business equality never authorizes a changed operation profile.
+    altered=copy.deepcopy(profile)
+    for key in ('signer_address','wallet_address'):altered['identity'][key]='0x'+altered['identity'][key][2:].swapcase()
+    off_request=next(request for request in reversed(world.requests) if request['action']=='off')
+    code,raw=world.invoke(dict(schema_version=1,action='result',profile=altered,expected_action='off',
+        action_id=off_request['action_id'],run_id=off_request['run_id']))
+    assert code==2 and json.loads(raw)['reason']=='ACTION_IDENTITY_MISMATCH'
+    on_request=next(request for request in world.requests if request['action']=='on')
+    code,raw=world.invoke(dict(on_request,profile=altered))
+    assert code==2 and json.loads(raw)['reason']=='CONFIRMATION_REQUIRED'
+    assert len(world.mutations)==count
+    for field,value in [('wallet_address','0x'+'9'*36+checksum['wallet_address'][-4:]),
+                        ('signer_address','0x'+'9'*36+checksum['signer_address'][-4:]),
+                        ('signature_type',2),('signature_type',True),('wallet_address','0x1234')]:
+        bad=json.loads(credential_bytes);bad[field]=value;credentials.write_text(json.dumps(bad))
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        capsys.readouterr();assert len(world.mutations)==count and world.readonly is True
+    credentials.write_bytes(credential_bytes)
+    assert all(path.read_bytes()==value for path,value in protected.items())
