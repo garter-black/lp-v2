@@ -94,8 +94,7 @@ class ReadOnlySDK:
                 rows.append(row)
         return rows
 
-    @staticmethod
-    def __metadata_market(raw, now, *, recovery=False):
+    def __metadata_market(self, raw, now, *, recovery=False, fee_wire=None):
         """Score facts are independent of whether a proposal can safely exist."""
         from decimal import Decimal as D
         from lp_v2.models import Market, Token
@@ -113,8 +112,8 @@ class ReadOnlySDK:
             return v
         t, rw = raw.trading, raw.rewards
         # No verified fee model => UNKNOWN score, never optimistic zero fees.
-        if t.fees_enabled is not False:
-            raise _Excluded('费用输入未验证')
+        from lp_v2.fee_policy import wire_maker_policy
+        enabled, taker_bps, rebate = wire_maker_policy(self.__audit.fee_wire(cid) if fee_wire is None else fee_wire)
         rates = [number(r.rewards_daily_rate) for r in (rw.clob_rewards or ())
                  if str(r.condition_id) == cid and r.asset_address.lower() == '0x2791bca1f2de4661ed88a30c99a7a9449aa84174'
                  and r.start_date <= now.date() and (r.end_date is None or r.end_date >= now.date())]
@@ -126,7 +125,7 @@ class ReadOnlySDK:
         return Market(cid, (Token(str(tokens[0]), 'Yes'), Token(str(tokens[1]), 'No')),
             number(t.minimum_tick_size, True), number(t.minimum_order_size, True), number(rw.rewards_min_size, True) if not recovery or rw.rewards_min_size else number(t.minimum_order_size, True),
             float(bid), float(ask), float(number(raw.metrics.liquidity_num)), float(number(raw.metrics.volume_24hr)),
-            float(sum(rates)), float(number(rw.rewards_max_spread, True)), 0.0, 0, False, bool(rates),
+            float(sum(rates)), float(number(rw.rewards_max_spread, True)), float(rebate), float(taker_bps), enabled, bool(rates),
             any(tag.slug == 'politics' for tag in raw.tags), None, raw.state.accepting_orders)
 
     def __map_market(self, raw, now, m, *, recovery=False):
@@ -225,6 +224,12 @@ class ReadOnlySDK:
         return c.wallet_address[-4:] if c is not None else UNKNOWN
 
     def read_fixed_market(self, now, condition_id):
+        try:
+            return self.__fixed_market(now, condition_id)
+        except Exception:
+            raise ValueError("fixed market validation unavailable") from None
+
+    def __fixed_market(self, now, condition_id):
         self.__audit.require_ready()
         found=[]
         for page in self.__public.list_markets(condition_ids=[condition_id],include_tag=True,page_size=20):
@@ -248,3 +253,7 @@ class ReadOnlySDK:
         if not isinstance(raw,dict):
             raise ValueError('region identity unavailable')
         return dict(blocked=raw.get('blocked'),country=raw.get('country'))
+
+    def public_preflight(self, now, condition_id):
+        from lp_v2.preflight import check_market
+        return check_market(self.__audit, self.__public, self.__http, now, condition_id, self.__metadata_market)

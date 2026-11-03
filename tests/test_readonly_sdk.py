@@ -178,3 +178,52 @@ def test_fixed_market_recovery_keeps_opening_ineligible_plan(tmp_path,dropped):
             observations.read_fixed_market(AT+timedelta(seconds=70),CID)
     finally:
         live.close();observations.close()
+
+
+def taker_fee_wire(**overrides):
+    return market_wire(feesEnabled=True, feeSchedule=dict(rate='.05', exponent=1, takerOnly=True, rebateRate='.25'), **overrides)
+
+
+def test_fixed_market_accepts_verified_taker_only_fees():
+    from lp_v2.readonly_sdk import ReadOnlySDK
+    p, seen = external_sdk([taker_fee_wire()])
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200,json={'in_play':False}))) as http:
+        sdk = ReadOnlySDK(public=p,http=http)
+        plan = sdk.read_fixed_market(AT,CID)[0]['plan']
+        assert plan.market.condition_id == CID
+        assert tuple(t.token_id for t in plan.market.tokens) == ('101','102')
+        assert plan.fee_per_share == (D('0'),D('0'))
+        assert plan.market.fees_enabled is True
+        assert plan.market.taker_fee_bps == 500 and plan.market.rebate_rate == .25
+        assert all(method == 'GET' for method,_ in seen)
+        sdk.close()
+
+
+FEE_FAILURES = ['missing-schedule','missing-role','non-taker-only','unsupported-exponent',
+                'negative-rate','nan-rate','invalid-rebate','unknown-fee-flag','contradictory-fee-flag']
+
+
+def unproven_fee_wire(case):
+    wire = taker_fee_wire()
+    if case == 'missing-schedule': wire.pop('feeSchedule')
+    elif case == 'missing-role': wire['feeSchedule'].pop('takerOnly')
+    elif case == 'non-taker-only': wire['feeSchedule']['takerOnly'] = False
+    elif case == 'unsupported-exponent': wire['feeSchedule']['exponent'] = 2
+    elif case == 'negative-rate': wire['feeSchedule']['rate'] = '-.01'
+    elif case == 'nan-rate': wire['feeSchedule']['rate'] = 'NaN'
+    elif case == 'invalid-rebate': wire['feeSchedule']['rebateRate'] = '1.1'
+    elif case == 'unknown-fee-flag': wire['feesEnabled'] = None
+    elif case == 'contradictory-fee-flag': wire['feesEnabled'] = False
+    return wire
+
+
+@pytest.mark.parametrize('case', FEE_FAILURES)
+def test_fixed_market_rejects_unproven_fee_policy(case):
+    from lp_v2.readonly_sdk import ReadOnlySDK
+    p,_ = external_sdk([unproven_fee_wire(case)])
+    sdk = ReadOnlySDK(public=p,http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200,json={'in_play':False}))))
+    try:
+        with pytest.raises(ValueError):
+            sdk.read_fixed_market(AT,CID)
+    finally:
+        sdk.close()
