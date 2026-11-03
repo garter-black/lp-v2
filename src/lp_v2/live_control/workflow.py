@@ -2,7 +2,7 @@
 from lp_v2.live_control.remote import request
 
 
-REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','proxy_execution','operator_authority')
+REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','proxy_execution','operator_authority','legacy_service','inventory_handoff')
 PUBLIC=('market_identity','token_identity','fees','state','political','in_play','rewards','constraints','books','opening_eligibility','market_inputs')
 
 
@@ -14,7 +14,9 @@ STEP_REASONS={
     'private_identity':{'FULL_SIGNER_PROXY_IDENTITY','ACCOUNT_EVIDENCE_MISSING'},
     'run_env':{'ENV_EXPECTATION_DIFFERS','ENV_UNAVAILABLE'},
     'state_identity':{'JOURNAL_FROZEN_IDENTITY','EXPLICIT_NEW_STATE','STATE_IDENTITY_UNAVAILABLE'},
-    'single_executor':{'EXECUTOR_AND_LOCK','SERVICE_EVIDENCE_MISSING'},
+    'single_executor':{'EXECUTOR_AND_LOCK','SERVICE_EVIDENCE_MISSING','LOCAL_EXECUTOR_HANDOFF','COMPETING_LOCAL_EXECUTOR','LOCAL_EXECUTOR_SCAN_INCOMPLETE'},
+    'legacy_service':{'LEGACY_SERVICE_HANDOFF','LEGACY_SERVICE_UNAVAILABLE'},
+    'inventory_handoff':{'ACCOUNT_EVIDENCE_MISSING','CONDITIONAL_BALANCE_UNAVAILABLE','NEW_STATE_ZERO_CONDITIONAL_BALANCES','OWNED_STOPPED_INVENTORY_MATCH','CONDITIONAL_INVENTORY_UNMATCHED','STOPPED_HANDOFF_INCOMPLETE'},
     'port':{'PORT_OWNER','SERVICE_EVIDENCE_MISSING'},
     'service':{'EFFECTIVE_SERVICE_CONTRACT','SERVICE_EVIDENCE_MISSING'},
     'balance':{'BALANCE_CAPITAL','ACCOUNT_EVIDENCE_MISSING'},

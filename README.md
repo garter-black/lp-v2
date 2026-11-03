@@ -88,3 +88,11 @@ These offline capabilities do not claim deployment or target readiness.
 Do not place trades or deploy until Ray explicitly authorizes each milestone.
 
 【LLM：Codex@Air｜模型=gpt-6-astra｜effort=xhigh｜fast=否】
+
+The live controller binds the installed launcher/unit and actual process arguments
+to the checked private-file references and full derived account identity. Its
+pre-switch handoff requires an inactive/disabled known legacy service, no alternate
+local live executor, zero open orders and exact selected-token inventory proof
+(including explicit two-token zero balances for new state). Incomplete evidence
+blocks startup; this covers one host and selected market, not distributed wallet
+exclusivity. See the [operator guide](docs/operations/live-control.md).

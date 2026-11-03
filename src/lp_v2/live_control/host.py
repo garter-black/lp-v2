@@ -43,6 +43,7 @@ def check(profile):
     except Exception:
         public={}
     checks.update(filesystem_checks(profile))
+    checks['legacy_service']=legacy_service_check()
     checks.update(account_checks(profile))
     checks['public_market']=fact('UNKNOWN','PREFLIGHT_CAPABILITY_UNVERIFIED')
     return dict(schema_version=1,status='UNKNOWN',as_of=now(),checks=checks,public_market=safe_public(profile,public))
@@ -52,7 +53,7 @@ def check(profile):
 def account_checks(profile):
     from lp_v2.readonly_sdk import L2Credentials, ReadOnlySDK
     from datetime import datetime, UTC
-    names=('private_identity','balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge','proxy_execution')
+    names=('private_identity','balance','allowance','closed_only','legacy_orders','region','relayer_auth','relayer_merge','proxy_execution','inventory_handoff')
     result={name:fact('UNKNOWN','ACCOUNT_EVIDENCE_MISSING') for name in names}
     try:
         credentials=L2Credentials(**read_json(profile['files']['l2_credentials']))
@@ -73,6 +74,12 @@ def account_checks(profile):
         sdk=ReadOnlySDK(credentials=credentials)
         try:
             result.update(sdk.read_account_readiness(datetime.now(UTC),capital_usdc=profile['trading']['capital_usdc'],identity=identity,relayer=relayer))
+            try:
+                from lp_v2.live_control.handoff import inventory_handoff
+                quantities=sdk.read_conditional_inventory(datetime.now(UTC),profile['trading']['market_condition_id'])
+                result['inventory_handoff']=inventory_handoff(profile,quantities)
+            except Exception:
+                result['inventory_handoff']=fact('UNKNOWN','CONDITIONAL_BALANCE_UNAVAILABLE')
         finally:
             sdk.close()
     except Exception:
@@ -98,6 +105,16 @@ def prepare(request):
                   LP_V2_MARKET=profile['trading']['market_condition_id'],LP_V2_CODE_SHA=profile['release']['expected_sha'])
     if changes!=expected:
         return dict(status='UNKNOWN',reason='PREPARATION_INVALID')
+    from lp_v2.live_control.invocation import binding
+    try:
+        binding(profile,system_properties(profile['services']['live_unit']),expected_env(profile),run)
+    except Exception:
+        return dict(status='UNKNOWN',reason='EFFECTIVE_SERVICE_CONTRACT')
+    from lp_v2.live_control.workflow import normalize_report
+    readiness=normalize_report(profile,check(profile))
+    if any(readiness['checks'][key]['status']!='PASS' for key in
+           ('private_identity','single_executor','legacy_service','legacy_orders','inventory_handoff')):
+        return readiness
     path=Path(profile['files']['run_env'])
     with owner_file(path) as source:
         old=source.read()
@@ -122,14 +139,18 @@ def process_stopped(profile):
         return False
 
 
-def journal_rows(profile,kind):
+def journal_rows(profile,kind=None):
     import sqlite3
     from lp_v2.journal import decode
     path=Path(profile['files']['state_dir'])/'journal.sqlite'
     # No Journal constructor, pragmas or database creation on observational reads.
     with owner_file(path): pass
-    db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+    wal=path.with_name(path.name+'-wal')
+    if wal.exists() and wal.stat().st_size:raise ValueError('unsettled journal writer')
+    db=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)
     try:
+        if kind is None:
+            return [(seq,event,decode(payload)) for seq,event,payload in db.execute('SELECT seq,kind,payload FROM events ORDER BY seq')]
         return [(seq,decode(payload)) for seq,payload in db.execute('SELECT seq,payload FROM events WHERE kind=? ORDER BY seq',(kind,))]
     finally:
         db.close()
@@ -327,7 +348,8 @@ def expected_env(profile):
 
 
 def system_properties(unit):
-    response=run(['systemctl','show',unit,'--property=MainPID,ActiveState,User,ExecStart,ExecStop,EnvironmentFiles,Conflicts,TimeoutStopUSec,Restart,UnitFileState'])
+    from lp_v2.live_control.privileges import PROPERTIES
+    response=run(['systemctl','show',unit,PROPERTIES])
     if response.returncode!=0: raise ValueError()
     return dict(line.split('=',1) for line in response.stdout.splitlines() if '=' in line)
 
@@ -380,10 +402,16 @@ def filesystem_checks(profile):
             and 'lp-v2.service' in live.get('Conflicts','')
             and live.get('Restart')=='no' and live.get('UnitFileState') in ('disabled','static')
             and readonly.get('User')=='lp-v2')
+        from lp_v2.live_control.invocation import binding
+        try:
+            binding(profile,live,env_values(profile),run)
+        except Exception:
+            valid=False
         checks['service']=fact('PASS' if valid else 'FAIL','EFFECTIVE_SERVICE_CONTRACT')
         stopped=live.get('MainPID')=='0' and live.get('ActiveState') in ('inactive','failed')
         lock_free=process_stopped(profile) if (state/'executor.lock').exists() else True
-        checks['single_executor']=fact('PASS' if stopped and lock_free else 'FAIL','EXECUTOR_AND_LOCK')
+        scan=local_executor_check()
+        checks['single_executor']=fact('FAIL','EXECUTOR_AND_LOCK') if not stopped or not lock_free or readonly.get('ActiveState')!='active' or readonly.get('MainPID') in ('0',None) else scan
         port=run(['ss','-H','-ltn','sport = :8765'])
         if port.returncode: raise ValueError()
         free=not port.stdout.strip()
@@ -399,6 +427,48 @@ def filesystem_checks(profile):
     return checks
 
 
+def legacy_service_check():
+    try:
+        response=run(['systemctl','show','open-trader-prediction.service','--property=ActiveState,UnitFileState'])
+        if response.returncode:raise ValueError()
+        values=dict(line.split('=',1) for line in response.stdout.splitlines() if '=' in line)
+        if not values.get('ActiveState') or not values.get('UnitFileState'):raise ValueError()
+        return fact('PASS' if values['ActiveState']=='inactive' and values['UnitFileState']=='disabled' else 'FAIL','LEGACY_SERVICE_HANDOFF')
+    except Exception:
+        return fact('UNKNOWN','LEGACY_SERVICE_UNAVAILABLE')
+
+
+def local_executor_check():
+    from time import monotonic
+    started=monotonic()
+    try:
+        mounts=Path('/proc/mounts').read_text()
+        if len(mounts)>1048576:raise ValueError()
+        proc=[line.split() for line in mounts.splitlines() if len(line.split())>=4 and line.split()[1]=='/proc']
+        if len(proc)!=1 or proc[0][2]!='proc' or any(option.startswith('hidepid=') and option not in ('hidepid=0','hidepid=off') for option in proc[0][3].split(',')):
+            raise ValueError('process visibility incomplete')
+        count=0
+        for path in Path('/proc').iterdir():
+            if not path.name.isdecimal():continue
+            count+=1
+            if count>4096 or monotonic()-started>2:raise ValueError()
+            try:
+                raw=(path/'cmdline').read_bytes()
+                if len(raw)>65536:raise ValueError()
+                args=[value.decode('utf-8') for value in raw.split(b'\0') if value]
+            except OSError:
+                # A race is harmless only with an independently absent PID directory.
+                try:path.stat()
+                except FileNotFoundError:continue
+                raise
+            if any(arg.endswith('/lp-v2') or arg in ('lp_v2','lp_v2.cli') for arg in args) and 'run' in args and '--live' in args:
+                return fact('FAIL','COMPETING_LOCAL_EXECUTOR')
+        if monotonic()-started>2:raise ValueError()
+        return fact('PASS','LOCAL_EXECUTOR_HANDOFF')
+    except Exception:
+        return fact('UNKNOWN','LOCAL_EXECUTOR_SCAN_INCOMPLETE')
+
+
 def observe(request):
     profile=request['profile'];state=Path(profile['files']['state_dir'])
     process=read_json(state/'process.json')
@@ -408,13 +478,19 @@ def observe(request):
     from lp_v2.live_process import process_identity
     identity=process_identity(process['pid'])
     live=system_properties(profile['services']['live_unit']);readonly=system_properties(profile['services']['readonly_unit'])
+    from lp_v2.live_control.invocation import actual_invocation
+    if identity is None or identity!=process['identity'] or str(process['pid'])!=live.get('MainPID') or live.get('ActiveState')!='active':
+        raise ValueError('process continuity unavailable')
+    derived=actual_invocation(profile,process['pid'],record['invocation']['argv'])
+    if derived!=record['invocation']['snapshot'] or process_identity(process['pid'])!=identity:
+        raise ValueError('file or process continuity unavailable')
     import httpx
     with httpx.Client(timeout=5,trust_env=False,follow_redirects=False) as client:
         response=client.get('http://127.0.0.1:8765/summary');response.raise_for_status();row=response.json()
     return dict(schema_version=1,run_id=record['run_id'],executor_running=identity is not None and identity==process['identity']
                 and str(process['pid'])==live.get('MainPID') and live.get('ActiveState')=='active',
                 readonly_stopped=readonly.get('MainPID')=='0' and readonly.get('ActiveState')=='inactive',
-                identity=profile['identity'],summary=safe_summary(row))
+                identity=derived['identity'],summary=safe_summary(row))
 
 
 def start(request):
@@ -428,7 +504,10 @@ def start(request):
     existing=read_json(state/'process.json') if (state/'process.json').exists() else {}
     previous=existing.get('run_id')
     seq=max((seq for seq,_ in journal_rows(profile,'occupation')),default=0) if (state/'journal.sqlite').exists() else 0
-    record=dict(profile=profile,run_id=None,started_at=now(),journal_seq=seq,action_id=request['action_id'])
+    from lp_v2.live_control.invocation import binding,file_snapshot
+    invocation=dict(argv=binding(profile,system_properties(profile['services']['live_unit']),env_values(profile),run),
+                    snapshot=file_snapshot(profile))
+    record=dict(profile=profile,run_id=None,started_at=now(),journal_seq=seq,action_id=request['action_id'],invocation=invocation)
     atomic_json(state/'live-control-run.json',record)
     if run(['systemctl','stop',profile['services']['readonly_unit']]).returncode:
         return dict(status='UNKNOWN',reason='READONLY_STOP_FAILED')

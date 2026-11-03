@@ -167,6 +167,8 @@ The short-lived Linux helper drops real/effective UID and GID to the fixed lp-v2
 account, clears supplementary groups and performs application reads/writes with
 that identity. Only allowlisted systemctl show/start/stop calls for the two fixed
 units temporarily regain the saved operator privilege, with a fixed environment.
+A separate fixed read-only show of `open-trader-prediction.service` stays
+unprivileged; the legacy unit has no privileged action route.
 Process identity is checked under the service UID, and a foreign/mismatched
 executor is refused before stopping a unit. Private files remain 0600 and state
 0700 owned by lp-v2. A missing sudo/service identity or invalid path blocks before
@@ -178,7 +180,42 @@ Check verifies installed source against the pinned repository object and release
 file permissions, environment, journal identity, effective services and port
 ownership. Existing draft units have an on-failure restart policy; a readiness
 check requiring no automatic retry does not silently change them. An effective
-approved service configuration must already meet the contract.
+approved service configuration must already meet the contract. The effective
+User/Group, exact single ExecStart/ExecStop, working directory, environment file,
+stop timeout and safety settings must agree with the supported shipped launcher.
+Its installed bytes must match the pinned Git artifact and the recognized
+launcher. Extra commands, arguments, environment inputs or unsupported overrides
+refuse startup. Literal credential/state references must resolve to the profile;
+market/capital/SHA must match before switching. A valid saved profile can therefore
+still fail against an installed service that uses different files.
+
+After start, protected MainPID identity and actual `/proc` arguments must match the
+checked invocation. Full signer/Proxy/L2 identity is derived from the actual file
+references. Pre/post file owner/mode/inode metadata and derived public identity
+must remain stable; raw secrets and hashes of secret material are not reported.
+This is a trusted single-host operator proof, not attestation against adversarial
+same-UID file replacement or a compromised root account.
+
+Handoff also requires the known legacy service inactive and disabled, the fixed
+live unit inactive, readonly active, the configured lock free, and a bounded local
+process scan finding no alternate `lp-v2 run --live`, including alternate state
+paths. Incomplete inspection, including a hidden-PID proc mount, is UNKNOWN. The scan reads command lines, never
+process environments, and sends no signals. It does not claim distributed wallet
+exclusivity or inventory knowledge in unrelated markets.
+
+The two selected tokens come from verified fixed-market metadata. Authenticated
+GET `/balance-allowance` with CONDITIONAL/token_id/signature_type=1 reads each
+quantity in integer base units (divided by 1,000,000). A new state needs both
+quantities explicitly zero; an empty directory cannot establish that. Existing
+history needs a matching latest stopped process/control/result, full owned
+wallet/market/token identity, successful complete reconciliation, terminal known
+orders/merges and complete finite nonnegative Position quantities/costs exactly
+matching both fresh balances. Missing, foreign, interrupted or unmatched history
+is UNKNOWN. Checks read journal snapshots without constructing a writing Journal,
+replaying a ledger, adopting inventory or changing allowances. Unsettled WAL
+history also remains UNKNOWN. All handoff/account/executor facts are read again
+inside the target control lock before stopping readonly. Explicit environment
+preparation also repeats the handoff proofs under that lock before writing run.env.
 
 Authenticated L2 GETs prove balance, explicit spender allowances, closed-only
 state and order observations independently. Authenticated relayer `/transactions`
@@ -209,12 +246,12 @@ must also compare the current private operator SOP before field acceptance.
 | Target/version | Existing SSH trust + exact pin; current release/COMPLETE/source/runtime match SHA | Refuse; no release switch |
 | Files/wallet | Owned private files; derived signer + complete Proxy/L2 identity | Independent FAIL/UNKNOWN; no signing client |
 | Config/state | Exact market/capital/SHA; original 0700 state/journal identity | Refuse drift; preserve all state |
-| Executor/handoff | Existing process lock, service MainPID and port owner; authenticated orders | Busy/conflict/unknown blocks new start |
+| Executor/handoff | Inactive/disabled legacy service, no alternate local live executor, readonly active, fixed lock/unit/port, zero authenticated orders; both verified token balances match a complete owned stopped snapshot (or explicit new-state zeros) | Busy/conflict/incomplete or unmatched inventory blocks new start |
 | Public market | #14 scope/identity/time and every required public check | Missing capability UNKNOWN; no duplicate fee policy |
 | Private account | Balance, explicit allowances, closed-only, region, relayer auth and concrete supported Proxy configuration | Missing required evidence UNKNOWN blocks; runtime merge remains NOT_RUN |
 | Service/preparation | Existing operator authority, immutable release, effective unit paths, user, env, conflicts, restart/boot policy | Service-owned app state; finite privileged unit actions; no permission install |
 | Switch | Same revision/facts/window before and after confirmation, target mutation lock | No unconfirmed mutation; action receipt before start |
-| Live readback | Two fresh advancing same-run snapshots with accounting SUCCESS | Bounded observation; owned drain/read-only rollback |
+| Live readback | Actual protected PID arguments and full derived account identity; two fresh advancing same-run snapshots with accounting SUCCESS | Bounded observation; owned drain/read-only rollback |
 | Stop/drain | Existing ExecStop; matching process result + fresh successful journal drain | Preserve failed/old/missing results and residuals |
 | Restore | Executor lock released and port free, then read-only identity/mode readback | Restore separate from drain; overall remains nonzero on uncertainty |
 | Evidence | Whitelisted JSON statuses and local protected operation/run records | No raw credentials, response bodies or transaction history |

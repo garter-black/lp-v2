@@ -9,7 +9,7 @@ from tests.test_live_control_profiles import profile, config_home, known_ssh
 from tests.test_live_control_host import target, combined_world, operator_os
 
 PUBLIC=('market_identity','token_identity','fees','state','political','in_play','rewards','constraints','books','opening_eligibility','market_inputs')
-REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','proxy_execution','operator_authority')
+REQUIRED=('release','artifacts','files','private_identity','run_env','state_identity','single_executor','port','service','balance','allowance','closed_only','legacy_orders','region','relayer_auth','proxy_execution','operator_authority','legacy_service','inventory_handoff')
 
 
 def ready_report(profile):
@@ -173,26 +173,27 @@ def test_on_does_not_accept_process_or_http_success_alone(config_home,profile,mo
         assert calls.count('on')==1 and calls.count('off')==1
 
 
-def test_preparation_is_explicit_and_preserves_secrets(target,monkeypatch):
+def test_preparation_is_explicit_and_preserves_secrets(combined_world,monkeypatch):
+    target=combined_world.profile
     import hashlib
     from pathlib import Path
     from tests.test_live_control_host import call_host
-    monkeypatch.setattr(subprocess,'run',lambda argv,**kw: subprocess.CompletedProcess(argv,0,'EnvironmentFiles='+target['files']['run_env'],'') if argv[:3]==['systemctl','show','lp-v2-live.service'] else pytest.fail('no privileged mutation during prepare'))
     path=Path(target['files']['run_env']); path.write_text('LP_V2_CAPITAL_USDC=100\nUNRELATED_SECRET=SECRET_KEEP\n')
     before=path.read_bytes(); signing=Path(target['files']['signing_key']).read_bytes()
     target['trading']['capital_usdc']='80'
     proof=dict(profile_sha256=hashlib.sha256(json.dumps(target,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
-               issued_at=datetime.now(UTC).isoformat(),window_end='2099-01-01T00:00:00+00:00',operation='prepare')
+               issued_at=combined_world.clock.isoformat(),window_end='2099-01-01T00:00:00+00:00',operation='prepare')
     request=dict(schema_version=1,action='prepare',profile=target,action_id='b'*32,
                  changes={'LP_V2_CAPITAL_USDC':'80','LP_V2_MARKET':target['trading']['market_condition_id'],'LP_V2_CODE_SHA':target['release']['expected_sha']})
     code,_=call_host(request); assert code==2 and path.read_bytes()==before
     request['confirmation']=proof
     code,result=call_host(request)
-    assert code==0 and result['status']=='PASS'
+    assert code==0 and result['status']=='PASS',result
     assert 'LP_V2_CAPITAL_USDC=80\n' in path.read_text() and 'UNRELATED_SECRET=SECRET_KEEP\n' in path.read_text()
     assert path.with_name(path.name+'.bak').read_bytes()==before
     assert Path(target['files']['signing_key']).read_bytes()==signing
     assert not list(Path(target['files']['state_dir']).glob('journal*'))
+    assert combined_world.mutations==[] and combined_world.readonly is True
     assert 'SECRET' not in json.dumps(result)
 
 
@@ -459,3 +460,32 @@ def test_check_retains_safe_step_reasons(combined_world,capsys):
     assert safe['checks']['public_market']['checks']['fees']['reason_code']=='CHECK_DETAIL_UNAVAILABLE'
     assert safe['checks']['public_market']['checks']['books']['status']=='BLOCKED'
     assert world.mutations==[]
+
+
+def test_handoff_rechecked_under_lock_before_switch(combined_world,monkeypatch,capsys):
+    import os
+    from pathlib import Path
+    world=combined_world;profile=world.profile
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    original_open=os.open;scenario=None;held=[]
+    def lock_boundary(path,*args,**kw):
+        fd=original_open(path,*args,**kw)
+        if str(path)==str(Path(profile['files']['state_dir'])/'control.lock'):
+            held.append(scenario)
+            if scenario=='legacy':world.legacy_active=True
+            if scenario=='alternate':world.extra_processes[45678]=['/alternate/lp-v2','run','--live','--state-dir','/elsewhere']
+            if scenario=='inventory':world.conditional['102']='1'
+        return fd
+    monkeypatch.setattr(os,'open',lock_boundary)
+    env=Path(profile['files']['run_env']);original_env=env.read_bytes()
+    for preparation in (False,True):
+        for scenario in ('legacy','alternate','inventory'):
+            world.legacy_active=False;world.extra_processes.clear();world.conditional={'101':'0','102':'0'}
+            before=original_env.replace(b'LP_V2_CAPITAL_USDC=100',b'LP_V2_CAPITAL_USDC=99') if preparation else original_env
+            env.write_bytes(before)
+            options=['--prepare-run-env'] if preparation else []
+            assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00',*options])==2
+            report=json.loads(capsys.readouterr().out.splitlines()[-1])
+            assert report['status']!='PASS' and held[-1]==scenario
+            assert world.mutations==[] and world.readonly is True and env.read_bytes()==before
+            assert sum(request['action'] in ('on','prepare') for request in world.requests)==len(held)

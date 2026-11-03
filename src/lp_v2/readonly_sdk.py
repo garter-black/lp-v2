@@ -255,6 +255,24 @@ class ReadOnlySDK:
         return dict(blocked=raw.get('blocked'),country=raw.get('country'))
 
 
+    def read_conditional_inventory(self, now, condition_id):
+        """Fresh selected-market quantities, from verified tokens and authenticated GETs."""
+        from decimal import Decimal
+        from polymarket.models.clob.account import BalanceAllowance
+        if self.__credentials is None or type(self.__credentials.signature_type) is not int or self.__credentials.signature_type!=1:
+            raise ValueError('conditional identity unavailable')
+        rows=self.read_fixed_market(now,condition_id)
+        tokens=tuple(token.token_id for token in rows[0]['plan'].market.tokens)
+        if len(tokens)!=2 or len(set(tokens))!=2 or not all(isinstance(t,str) and t.isdecimal() for t in tokens):
+            raise ValueError('conditional tokens unavailable')
+        quantities={}
+        for token in tokens:
+            raw=self.__account_get('/balance-allowance',now,dict(asset_type='CONDITIONAL',token_id=token,signature_type='1'))
+            data=BalanceAllowance.model_validate(raw)
+            if data.balance<0 or any(value<0 for value in data.allowances.values()):raise ValueError('conditional balance invalid')
+            quantities[token]=Decimal(data.balance)/Decimal('1000000')
+        return dict(condition_id=condition_id,token_ids=tokens,quantities=quantities,as_of=now.isoformat())
+
     def read_account_readiness(self, now, *, capital_usdc, identity, relayer):
         """Authenticated GET facts only. Authentication never proves a merge."""
         from decimal import Decimal

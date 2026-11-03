@@ -18,7 +18,7 @@ seteuid=os.seteuid
 getgroups=os.getgroups
 setgroups=os.setgroups
 _current=ContextVar('live_control_operator',default=None)
-PROPERTIES='--property=MainPID,ActiveState,User,ExecStart,ExecStop,EnvironmentFiles,Conflicts,TimeoutStopUSec,Restart,UnitFileState'
+PROPERTIES='--property=MainPID,ActiveState,User,ExecStart,ExecStop,EnvironmentFiles,Conflicts,TimeoutStopUSec,Restart,UnitFileState,Group,WorkingDirectory,Type,UMask,NoNewPrivileges,KillSignal,ExecStartPre,ExecStartPost,ExecCondition,ExecStopPost,ExecReload,Environment,PassEnvironment,UnsetEnvironment,RootDirectory,RootImage,DynamicUser,PAMName,ExecSearchPath,SupplementaryGroups'
 
 
 class AuthorityUnavailable(ValueError):
@@ -61,6 +61,9 @@ def operator_ready():
 
 def systemctl(argv,*,timeout):
     # No data-driven command, unit, options, environment or shell execution.
+    if argv==['systemctl','show','open-trader-prediction.service','--property=ActiveState,UnitFileState'] and operator_ready():
+        return subprocess.run(argv,text=True,capture_output=True,timeout=timeout,check=False,
+            env=dict(PATH='/usr/sbin:/usr/bin:/sbin:/bin',LANG='C',SYSTEMD_PAGER='cat',SYSTEMD_COLORS='0'))
     if (not operator_ready() or len(argv)<3 or argv[0]!='systemctl'
             or argv[2] not in ('lp-v2.service','lp-v2-live.service')
             or not ((argv[1] in ('start','stop') and len(argv)==3)

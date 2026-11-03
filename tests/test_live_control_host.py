@@ -153,10 +153,12 @@ def combined_world(target, config_home, monkeypatch):
     source=subprocess.check_output(['git','show','HEAD:'+source_path],text=True)
     (release/'src/lp_v2').mkdir(parents=True)
     (release/source_path).write_text(source)
+    launcher=subprocess.check_output(['git','show','HEAD:deploy/run-live'],text=True)
+    (release/'deploy').mkdir();(release/'deploy/run-live').write_text(launcher)
     (config_home/'profiles/tokyo.json').write_text(json.dumps(target))
     world=SimpleNamespace(profile=target,clock=datetime.now(UTC),readonly=True,lease=None,
         mutations=[],requests=[],http_requests=[],authority=True,uid=os.getuid(),gid=os.getgid(),
-        process_identity_valid=True,http_overrides={},stale_public=False,context=threading.local())
+        process_identity_valid=True,http_overrides={},stale_public=False,context=threading.local(),unit_overrides={},proc_argv=None,running_argv=None,extra_processes={},legacy_active=False,legacy_enabled=False,legacy_queries=[],conditional={'101':'0','102':'0'},conditional_status=200,proc_mounts='proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n',gone_processes=set())
     world.context.ids=(0,0,0)
     class Clock(datetime):
         @classmethod
@@ -176,15 +178,35 @@ def combined_world(target, config_home, monkeypatch):
         monkeypatch.setattr(privileges,'setresuid',lambda *ids:setattr(world.context,'ids',ids))
         monkeypatch.setattr(privileges,'seteuid',lambda uid:setattr(world.context,'ids',(world.context.ids[0],uid,world.context.ids[2])))
         monkeypatch.setattr(privileges,'service_account',lambda:SimpleNamespace(pw_uid=world.uid,pw_gid=world.gid))
-    original_stat=Path.stat;original_read_bytes=Path.read_bytes;original_read_text=Path.read_text
+    aliases={
+        '/etc/lp-v2/signing-key':target['files']['signing_key'],
+        '/etc/lp-v2/credentials.json':target['files']['l2_credentials'],
+        '/etc/lp-v2/relayer.json':target['files']['relayer_credentials'],
+        '/opt/lp-v2/state':target['files']['state_dir'],
+    }
+    original_open=os.open;original_resolve=Path.resolve
+    monkeypatch.setattr(os,'open',lambda path,*args,**kw:original_open(aliases.get(str(path),path),*args,**kw))
+    monkeypatch.setattr(Path,'resolve',lambda path,*args,**kw:original_resolve(Path(aliases.get(str(path),path)),*args,**kw))
+    original_stat=Path.stat;original_read_bytes=Path.read_bytes;original_read_text=Path.read_text;original_iterdir=Path.iterdir
+    def proc_entries(path):
+        if str(path)=='/proc':return iter([Path('/proc')/str(pid) for pid in [os.getpid(),*world.extra_processes]])
+        return original_iterdir(path)
+    monkeypatch.setattr(Path,'iterdir',proc_entries)
     def proc_stat(path,*a,**kw):
+        if str(path) in {f'/proc/{pid}' for pid in world.gone_processes}:raise FileNotFoundError('synthetic gone process')
         if str(path).startswith('/proc/'):
             return SimpleNamespace(st_uid=world.uid if world.process_identity_valid else world.uid+1)
-        return original_stat(path,*a,**kw)
+        return original_stat(Path(aliases.get(str(path),path)),*a,**kw)
     def proc_bytes(path,*a,**kw):
-        if str(path)==f'/proc/{os.getpid()}/cmdline':return b'lp_v2\0'
+        for pid,args in world.extra_processes.items():
+            if str(path)==f'/proc/{pid}/cmdline':
+                if isinstance(args,Exception):raise args
+                return ('\0'.join(args)+'\0').encode()
+        if str(path)==f'/proc/{os.getpid()}/cmdline':
+            return ('\0'.join(world.proc_argv or world.running_argv or ['lp_v2'])+'\0').encode()
         return original_read_bytes(path,*a,**kw)
     def proc_text(path,*a,**kw):
+        if str(path)=='/proc/mounts':return world.proc_mounts
         if str(path)=='/proc/sys/kernel/random/boot_id':return 'synthetic-boot'
         if str(path)==f'/proc/{os.getpid()}/stat':return '1 (lp-v2) '+' '.join(['S']+['0']*18+['123'])
         return original_read_text(path,*a,**kw)
@@ -193,10 +215,15 @@ def combined_world(target, config_home, monkeypatch):
     monkeypatch.setattr(Path,'read_text',proc_text)
     def properties(unit):
         live=unit=='lp-v2-live.service';pid=os.getpid() if world.lease else 0
-        return dict(MainPID=str(pid if live else 11223 if world.readonly else 0),
-            ActiveState='active' if (world.lease if live else world.readonly) else 'inactive',User='lp-v2',
+        values=dict(MainPID=str(pid if live else 11223 if world.readonly else 0),
+            ActiveState='active' if (world.lease if live else world.readonly) else 'inactive',User='lp-v2',Group='lp-v2',
             ExecStart=str(root/'current/deploy/run-live'),ExecStop=str(root/'current/.venv/bin/lp-v2')+' stop --state-dir '+target['files']['state_dir'],
-            EnvironmentFiles=target['files']['run_env'],Conflicts='lp-v2.service',TimeoutStopUSec='2min 30s',Restart='no',UnitFileState='disabled')
+            EnvironmentFiles=target['files']['run_env'],Conflicts='lp-v2.service',TimeoutStopUSec='2min 30s',Restart='no',UnitFileState='disabled',
+            WorkingDirectory=str(root/'current'),Type='simple',UMask='0077',NoNewPrivileges='yes',KillSignal='15',
+            ExecStartPre='',ExecStartPost='',ExecCondition='',ExecStopPost='',ExecReload='',Environment='',PassEnvironment='',
+            UnsetEnvironment='',RootDirectory='',RootImage='',DynamicUser='no',PAMName='',ExecSearchPath='',SupplementaryGroups='')
+        if live:values.update(world.unit_overrides)
+        return values
     def child(request):
         # OS identity facade applies only inside the real short-lived target invocation.
         world.context.ids=(0,0,0)
@@ -213,7 +240,7 @@ def combined_world(target, config_home, monkeypatch):
             code,output=child(request)
             return subprocess.CompletedProcess(argv,code,output,'')
         if argv[0]=='git':
-            text=source_path+'\n' if 'ls-tree' in argv else source
+            text=source_path+'\n' if 'ls-tree' in argv else launcher if argv[-1].endswith(':deploy/run-live') else source
             return subprocess.CompletedProcess(argv,0,text,'')
         if 'preflight' in argv:
             output=io.StringIO()
@@ -224,6 +251,12 @@ def combined_world(target, config_home, monkeypatch):
             return subprocess.CompletedProcess(argv,code,value,'')
         if argv[0]=='systemctl':
             action,unit=argv[1:3]
+            if unit=='open-trader-prediction.service':
+                from lp_v2.live_control import privileges
+                assert action=='show' and argv[3:]==['--property=ActiveState,UnitFileState']
+                assert privileges.geteuid()==world.uid,'legacy observation must stay unprivileged'
+                world.legacy_queries.append(tuple(argv))
+                return subprocess.CompletedProcess(argv,0,'ActiveState='+('active' if world.legacy_active else 'inactive')+'\nUnitFileState='+('enabled' if world.legacy_enabled else 'disabled'),'')
             assert unit in ('lp-v2.service','lp-v2-live.service')
             if action=='show':return subprocess.CompletedProcess(argv,0,'\n'.join(k+'='+v for k,v in properties(unit).items()),'')
             assert action in ('start','stop')
@@ -234,6 +267,11 @@ def combined_world(target, config_home, monkeypatch):
             if unit=='lp-v2.service':world.readonly=action=='start'
             elif action=='start':
                 assert world.lease is None,'one executor only'
+                values=dict(line.split('=',1) for line in Path(target['files']['run_env']).read_text().splitlines() if '=' in line)
+                world.running_argv=[str(release/'.venv/bin/python'),str(release/'.venv/bin/lp-v2'),'run','--live',
+                    '--capital-usdc',values['LP_V2_CAPITAL_USDC'],'--market',values['LP_V2_MARKET'],'--code-sha',values['LP_V2_CODE_SHA'],
+                    '--private-key-file','/etc/lp-v2/signing-key','--credentials-file','/etc/lp-v2/credentials.json',
+                    '--relayer-credentials-file','/etc/lp-v2/relayer.json','--state-dir','/opt/lp-v2/state']
                 previous_umask=os.umask(0o077)
                 try:
                     world.lease=ProcessLock(target['files']['state_dir']).__enter__()
@@ -245,7 +283,7 @@ def combined_world(target, config_home, monkeypatch):
             elif world.lease is not None:
                 journal=Journal(Path(target['files']['state_dir'])/'journal.sqlite')
                 journal.append('stop_result',dict(at=world.clock,exit_code=0,orders=[],pending=[],positions=[],merges=[],inventory=[],reconciliation='SUCCESS',accounting_as_of=world.clock));journal.close()
-                world.lease.finish(0);world.lease.__exit__(None,None,None);world.lease=None
+                world.lease.finish(0);world.lease.__exit__(None,None,None);world.lease=None;world.running_argv=None
             return subprocess.CompletedProcess(argv,0,'','')
         if argv[0]=='ss':
             pid=os.getpid() if world.lease else 11223 if world.readonly else None
@@ -267,6 +305,14 @@ def combined_world(target, config_home, monkeypatch):
                 timestamp=str(int((world.clock-timedelta(seconds=300 if world.stale_public else 1)).timestamp()*1000)),
                 bids=[dict(price=bid,size='100')],asks=[dict(price=ask,size='100')],min_order_size='1',tick_size='0.01',neg_risk=False,hash='fixture')
         elif path.startswith('/markets/'):data={'in_play':False}
+        elif path=='/balance-allowance' and request.url.params.get('asset_type')=='CONDITIONAL':
+            assert dict(request.url.params)==dict(asset_type='CONDITIONAL',signature_type='1',token_id=request.url.params['token_id'])
+            assert request.headers['POLY_ADDRESS']==target['identity']['signer_address']
+            token=request.url.params['token_id'];assert token in ('101','102')
+            value=world.conditional.get(token)
+            if token=='102' and getattr(world,'conditional_advance',False):world.clock+=timedelta(seconds=120)
+            data={} if value is None else dict(balance=value,allowances={})
+            return httpx.Response(world.conditional_status,json=data,request=request)
         elif path=='/balance-allowance':data={'balance':'200000000','allowances':{
             '0xE111180000d2663C0091e4f400237545B87B996B':'200000000','0xe2222d279d744050d28e00520010520000310F59':'200000000'}}
         elif path=='/auth/ban-status/closed-only':data={'closed_only':False}
@@ -373,3 +419,156 @@ def test_off_unknown_merge_remains_unknown(target,monkeypatch):
             assert report['merge_history']['reason'] in ('MERGE_UNSETTLED','MERGE_HISTORY_MISSING','MERGE_HISTORY_INVALID')
         else:assert code==0 and report['drain']=='PASS'
         assert not any(any(arg in argv for arg in ('merge','submit','cancel')) for argv in calls)
+
+
+def test_on_binds_installed_launcher_to_checked_files(combined_world,config_home,monkeypatch,capsys):
+    from lp_v2.cli import main
+    world=combined_world;original=copy.deepcopy(world.profile)
+    config=config_home/'profiles/tokyo.json';launcher=Path(original['release']['root'])/'current/deploy/run-live';original_launcher=launcher.read_bytes()
+    alternative=Path(original['release']['root'])/'alternate-l2.json';alternative.write_bytes(Path(original['files']['l2_credentials']).read_bytes());alternative.chmod(0o600)
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    env=Path(original['files']['run_env']);original_env=env.read_bytes()
+    for number,scenario in enumerate(('credentials','state','extra_arg','extra_command','stop_arg','stop_ref','env_ref','env_override','env_input','group','launcher_bytes'),1):
+        world.profile.clear();world.profile.update(copy.deepcopy(original));world.unit_overrides.clear();launcher.write_bytes(original_launcher);env.write_bytes(original_env)
+        if scenario=='credentials':world.profile['files']['l2_credentials']=str(alternative)
+        if scenario=='state':
+            alternate=Path(original['release']['root'])/'alternate-state';alternate.mkdir(mode=0o700)
+            world.profile['files']['state_dir']=str(alternate)
+        if scenario=='extra_arg':world.unit_overrides['ExecStart']=str(launcher)+' --unexpected'
+        if scenario=='extra_command':world.unit_overrides['ExecStartPre']='/bin/true'
+        if scenario=='stop_arg':world.unit_overrides['ExecStop']=str(launcher.parent.parent/'.venv/bin/lp-v2')+' stop --state-dir '+original['files']['state_dir']+' --unexpected'
+        if scenario=='stop_ref':world.unit_overrides['ExecStop']=str(launcher.parent.parent/'.venv/bin/lp-v2')+' stop --state-dir /alternate/state'
+        if scenario=='env_ref':world.unit_overrides['EnvironmentFiles']='/another/run.env'
+        if scenario=='env_override':world.unit_overrides['Environment']='BASH_ENV=/another/script'
+        if scenario=='env_input':env.write_bytes(original_env+b'BASH_ENV=/another/script\n')
+        if scenario=='group':world.unit_overrides['Group']='other'
+        if scenario=='launcher_bytes':launcher.write_bytes(original_launcher+b'\n# unsupported edit\n')
+        config.write_text(json.dumps(world.profile));before=env.read_bytes()
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        capsys.readouterr();assert world.mutations==[] and world.readonly is True and env.read_bytes()==before
+        # A directly confirmed helper preparation must bind the target too.
+        if scenario=='env_input':continue
+        from lp_v2.live_control.profiles import fingerprint
+        request=dict(schema_version=1,action='prepare',profile=world.profile,action_id=f'{number:032x}',
+            changes=dict(LP_V2_CAPITAL_USDC='100',LP_V2_MARKET=original['trading']['market_condition_id'],LP_V2_CODE_SHA=original['release']['expected_sha']),
+            confirmation=dict(operation='prepare',profile_sha256=fingerprint(world.profile),issued_at=world.clock.isoformat(),window_end='2099-01-01T00:00:00+00:00'))
+        code,raw=world.invoke(request)
+        assert code==2 and env.read_bytes()==before and not env.with_name(env.name+'.bak').exists()
+        assert world.mutations==[] and world.readonly is True
+    env.write_bytes(original_env)
+    world.profile.clear();world.profile.update(original);config.write_text(json.dumps(original));world.unit_overrides.clear();launcher.write_bytes(original_launcher)
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==0
+    capsys.readouterr();assert main(['live','off'])==0;capsys.readouterr()
+
+
+def test_observe_derives_full_identity_from_actual_invocation(combined_world,monkeypatch,capsys):
+    from lp_v2.cli import main
+    world=combined_world;profile=world.profile
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==0
+    capsys.readouterr();run_id=world.lease.record['run_id']
+    request=dict(schema_version=1,action='observe',profile=profile,run_id=run_id)
+    code,raw=world.invoke(request);good=json.loads(raw)
+    assert good['identity']==profile['identity'] and good['executor_running'] is True
+    # Same public wallet tail cannot establish full account identity.
+    credentials=Path(profile['files']['l2_credentials']);original=credentials.read_bytes()
+    changed=json.loads(original);changed['wallet_address']='0x'+'9'*36+profile['identity']['wallet_address'][-4:]
+    credentials.write_text(json.dumps(changed))
+    code,raw=world.invoke(request);bad=json.loads(raw)
+    assert bad.get('identity')!=profile['identity'] and bad.get('executor_running') is not True
+    credentials.write_bytes(original)
+    # Restoring bytes does not restore continuity across a changed file.
+    code,raw=world.invoke(request);assert json.loads(raw).get('executor_running') is not True
+    world.proc_argv=list(world.running_argv);world.proc_argv[world.proc_argv.index('--state-dir')+1]='/alternate/state'
+    code,raw=world.invoke(request);assert json.loads(raw).get('executor_running') is not True
+    world.proc_argv=None;world.process_identity_valid=False
+    code,raw=world.invoke(request);assert json.loads(raw).get('executor_running') is not True
+    assert 'SECRET' not in raw
+    world.process_identity_valid=True
+    assert main(['live','off'])==0;capsys.readouterr()
+
+
+def test_check_refuses_active_legacy_or_alternate_executor(combined_world,monkeypatch,capsys):
+    from lp_v2.cli import main
+    world=combined_world
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    for scenario in ('legacy_active','legacy_enabled','alternate','incomplete','readonly_missing','hidden'):
+        world.legacy_active=scenario=='legacy_active';world.legacy_enabled=scenario=='legacy_enabled'
+        world.readonly=scenario!='readonly_missing';world.extra_processes.clear()
+        world.proc_mounts='proc /proc proc rw,hidepid=2 0 0\n' if scenario=='hidden' else 'proc /proc proc rw 0 0\n'
+        if scenario=='alternate':world.extra_processes[45678]=['/another/.venv/bin/lp-v2','run','--live','--state-dir','/alternate/state']
+        if scenario=='incomplete':world.extra_processes[45678]=PermissionError('synthetic proc denied')
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        report=json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert any(report['checks'][key]['status']!='PASS' for key in ('legacy_service','single_executor'))
+        assert world.mutations==[]
+    world.legacy_active=world.legacy_enabled=False;world.readonly=True;world.extra_processes.clear();world.proc_mounts='proc /proc proc rw 0 0\n'
+    world.extra_processes[45678]=FileNotFoundError('synthetic disappeared');world.gone_processes.add(45678)
+    assert main(['live','check'])==0
+    report=json.loads(capsys.readouterr().out)
+    assert report['checks']['legacy_service']['status']==report['checks']['single_executor']['status']=='PASS'
+    assert world.legacy_queries and world.mutations==[]
+
+
+def test_check_requires_conditional_inventory_handoff(combined_world,monkeypatch,capsys):
+    from datetime import timedelta
+    from decimal import Decimal as D
+    from dataclasses import replace
+    from lp_v2.cli import main
+    from lp_v2.journal import Journal
+    from lp_v2.models import Position,MergeRequest,MergeResult,Outcome
+    world=combined_world;profile=world.profile;state=Path(profile['files']['state_dir'])
+    monkeypatch.setattr('builtins.input',lambda _:'on')
+    before={p:p.read_bytes() for p in state.rglob('*') if p.is_file()}
+    world.conditional['101']='1250000'
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+    capsys.readouterr();assert world.mutations==[]
+    assert {p:p.read_bytes() for p in state.rglob('*') if p.is_file()}==before
+    for value,status in [(None,200),('1.2',200),('-1',200),('0',503)]:
+        world.conditional['101']=value;world.conditional_status=status
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        capsys.readouterr();assert world.mutations==[]
+    world.conditional_status=200;world.conditional={'101':'0','102':'0'};world.conditional_advance=True
+    assert main(['live','check'])==2
+    assert json.loads(capsys.readouterr().out)['checks']['inventory_handoff']['status']=='UNKNOWN'
+    assert world.mutations==[]
+    world.conditional_advance=False
+    assert main(['live','check'])==0
+    assert json.loads(capsys.readouterr().out)['checks']['inventory_handoff']['status']=='PASS'
+    # An authoritative prior stopped run, with literal owned quantities and costs.
+    started=world.clock-timedelta(seconds=30);at=world.clock-timedelta(seconds=10)
+    owner='lp-v2:'+profile['identity']['wallet_address'].lower();market=profile['trading']['market_condition_id']
+    positions=[Position(owner,market,'101',D('1.25'),D('.5'),at),Position(owner,market,'102',D('2'),D('1.1'),at)]
+    record=dict(profile=copy.deepcopy(profile),run_id='f'*32,started_at=started.isoformat(),journal_seq=1)
+    process=dict(run_id='f'*32,pid=45678,identity='synthetic-boot:123')
+    final=dict(run_id='f'*32,exit_code=0)
+    for name,payload in [('live-control-run.json',record),('process.json',process),('stop-result.json',final)]:
+        path=state/name;path.write_text(json.dumps(payload));path.chmod(0o600)
+    def history(rows,*,merges=(),tokens=('101','102'),reconciliation='SUCCESS'):
+        journal=Journal(state/'journal.sqlite')
+        if not journal.events():
+            journal.append('identity',dict(owner=owner,condition_id=market,token_ids=tokens))
+            journal.append('occupation',dict(at=started))
+        journal.append('stop_result',dict(at=at,exit_code=0,orders=[],pending=[],positions=rows,merges=merges,inventory=[],reconciliation=reconciliation,accounting_as_of=at))
+        journal.close();(state/'journal.sqlite').chmod(0o600)
+    world.conditional={'101':'1250000','102':'2000000'}
+    history(positions)
+    frozen={p:p.read_bytes() for p in state.rglob('*') if p.is_file()}
+    assert main(['live','check'])==0
+    assert json.loads(capsys.readouterr().out)['checks']['inventory_handoff']['status']=='PASS'
+    assert {p:p.read_bytes() for p in state.rglob('*') if p.is_file()}==frozen
+    for rows in ([replace(positions[0],owner='foreign'),positions[1]], [positions[0]],
+                 [replace(positions[0],cost_usdc=D('NaN')),positions[1]],
+                 [replace(positions[0],token_id='999'),positions[1]], positions):
+        history(rows,reconciliation='UNKNOWN' if rows is positions else 'SUCCESS')
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        capsys.readouterr();assert world.mutations==[]
+    unknown=MergeResult(MergeRequest('pending',owner,market,'101','102',D('1'),started),Outcome.UNKNOWN,D('0'),at)
+    history(positions,merges=[unknown])
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2;capsys.readouterr()
+    history(positions);final['run_id']='e'*32;(state/'stop-result.json').write_text(json.dumps(final))
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2;capsys.readouterr()
+    reads=[r for r in world.http_requests if r.url.path=='/balance-allowance' and r.url.params.get('asset_type')=='CONDITIONAL']
+    assert {r.url.params['token_id'] for r in reads}=={'101','102'}
+    assert all(r.method=='GET' and r.url.params['signature_type']=='1' for r in reads)
+    assert world.mutations==[]
