@@ -165,6 +165,8 @@ def combined_world(target, config_home, monkeypatch):
         @classmethod
         def now(cls,tz=None):return world.clock.astimezone(tz) if tz else world.clock.replace(tzinfo=None)
     monkeypatch.setattr(cli,'datetime',Clock)
+    from lp_v2 import readonly_sdk
+    monkeypatch.setattr(readonly_sdk,'datetime',Clock)
     monkeypatch.setattr(datetime_module,'datetime',Clock)
     import time
     monkeypatch.setattr(time,'sleep',lambda seconds:setattr(world,'clock',world.clock+timedelta(seconds=seconds)))
@@ -341,13 +343,20 @@ def combined_world(target, config_home, monkeypatch):
             status,data=world.http_overrides[path];return httpx.Response(status,json=data,request=request)
         if path=='/markets/keyset':
             wire=taker_fee_wire()
+            wire['liquidityNum']=getattr(world,'public_liquidity','2000')
             if getattr(world,'fee_blocked',False):wire['feeSchedule']['takerOnly']=False
             data={'markets':[wire],'next_cursor':None}
         elif path=='/book':
             token=request.url.params['token_id'];bid,ask=('0.46','0.48') if token=='101' else ('0.51','0.53')
+            if token=='101' and getattr(world,'changed_midpoint',False):bid,ask='0.47','0.49'
             data=dict(market=target['trading']['market_condition_id'],asset_id=token,
                 timestamp=str(int((world.clock-timedelta(seconds=300 if world.stale_public else 1)).timestamp()*1000)),
                 bids=[dict(price=bid,size='100')],asks=[dict(price=ask,size='100')],min_order_size='1',tick_size='0.01',neg_risk=False,hash='fixture')
+            if getattr(world,'book_timeline',False):
+                if token=='101':world.book_started=world.clock
+                started=world.book_started
+                data['timestamp']=str(int((started+timedelta(seconds=3 if getattr(world,'future_book',False) and token=='101' else 1)).timestamp()*1000))
+                world.clock=started+timedelta(seconds=2 if token=='101' else 4 if getattr(world,'future_book',False) else 3)
         elif path.startswith('/markets/'):data={'in_play':False}
         elif path=='/balance-allowance' and request.url.params.get('asset_type')=='CONDITIONAL':
             assert dict(request.url.params)==dict(asset_type='CONDITIONAL',signature_type='1',token_id=request.url.params['token_id'])
@@ -887,3 +896,88 @@ def test_check_and_start_bind_same_builder_credential(combined_world,monkeypatch
     assert relayer and all(r.method=='GET' for r in world.http_requests)
     assert ('POLY_BUILDER_API_KEY' in relayer[0].headers)==(mode=='builder')
     assert not any(r.url.path=='/deployed' for r in world.http_requests)
+
+
+@pytest.mark.parametrize('invalid',[False,True])
+def test_live_control_uses_completed_book_times(combined_world,monkeypatch,capsys,invalid):
+    from lp_v2.cli import main
+    world=combined_world
+    world.book_timeline=True;world.book_started=world.clock;world.future_book=invalid
+    code=main(['live','check']);report=json.loads(capsys.readouterr().out)
+    if invalid:
+        assert code==2 and report['checks']['public_market']['checks']['books']['status']!='PASS'
+        assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+        capsys.readouterr();assert world.mutations==[] and world.lease is None
+        return
+    assert code==0 and report['checks']['public_market']['checks']['books']['status']=='PASS', {k:v for k,v in report['checks'].items() if v['status']!='PASS'}
+    world.book_started=world.clock
+    monkeypatch.setattr('builtins.input',lambda _: 'on')
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==0
+    result=json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert result['status']=='PASS' and result['verified_rounds']==2
+    assert world.mutations.count(('start','lp-v2-live.service'))==1
+    world.stale_public=True;world.book_timeline=False
+    assert main(['live','off'])==0
+    off=json.loads(capsys.readouterr().out);assert off['status']=='PASS' and off['drain']=='PASS'
+    count=len(world.mutations)
+    assert main(['live','off'])==0
+    capsys.readouterr();assert len(world.mutations)==count and world.lease is None and world.readonly
+
+
+@pytest.mark.parametrize('change',['time-only','liquidity','midpoint','public-stale','public-future','public-missing','report-stale','report-future','report-missing','status','reason','blocker','threshold'])
+def test_confirmation_resampling_preserves_business_facts(combined_world,monkeypatch,capsys,change):
+    from lp_v2.cli import main
+    world=combined_world;world.book_timeline=True
+    boundary=subprocess.run
+    def corrupt_time(raw,kind):
+        if kind=='missing':raw.pop('as_of',None)
+        else:raw['as_of']=(world.clock+timedelta(seconds=-61 if kind=='stale' else 1)).isoformat()
+        return raw
+    def external(argv,**kwargs):
+        response=boundary(argv,**kwargs)
+        if getattr(world,'corrupt_report',False):
+            try:raw=json.loads(response.stdout)
+            except (ValueError,TypeError):return response
+            if isinstance(raw,dict) and 'public_market' in raw:
+                return subprocess.CompletedProcess(argv,response.returncode,json.dumps(corrupt_time(raw,change.split('-')[1])),response.stderr)
+        return response
+    monkeypatch.setattr(subprocess,'run',external)
+    def confirm(_):
+        if change=='liquidity':world.public_liquidity='2001'
+        if change=='midpoint':world.changed_midpoint=True
+        if change.startswith('report-'):world.corrupt_report=True
+        if change.startswith('public-') or change in ('status','reason','blocker','threshold'):
+            def transform(raw):
+                if change.startswith('public-'):return corrupt_time(raw,change.split('-')[1])
+                if change=='status':raw['checks']['in_play']['status']='BLOCKED'
+                if change=='reason':raw['checks']['in_play']['reason_code']='PUBLIC_READ_UNAVAILABLE'
+                detail=raw['checks']['opening_eligibility']['details']
+                if change=='blocker':detail['blockers']=['LIQUIDITY_BELOW_MIN']
+                if change=='threshold':detail['minimum_liquidity']='1001'
+                return raw
+            world.public_report_transform=transform
+        return 'on'
+    monkeypatch.setattr('builtins.input',confirm)
+    code=main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])
+    result=json.loads(capsys.readouterr().out.splitlines()[-1])
+    if change!='time-only':
+        expected_reason='PROFILE_INVALID' if change in ('report-stale','report-future') else 'CONFIRMATION_FACTS_CHANGED'
+        assert code==2 and result['reason']==expected_reason
+        if change not in ('liquidity','midpoint'):
+            assert world.mutations==[] and world.lease is None and world.readonly
+            return
+        details=result['checks']['public_market']['checks']['opening_eligibility']['details']
+        assert details['as_of']==world.clock.isoformat()
+        assert details['liquidity_num']==('2001' if change=='liquidity' else '2000')
+        assert details['midpoint']==('0.48' if change=='midpoint' else '0.47')
+        assert result['checks']['public_market']['status']=='PASS'
+        assert world.mutations==[] and world.lease is None and world.readonly
+    else:
+        assert code==0 and result['status']=='PASS' and result['verified_rounds']==2
+        assert world.mutations.count(('start','lp-v2-live.service'))==1
+        world.book_timeline=False;world.stale_public=True
+        assert main(['live','off'])==0
+        off=json.loads(capsys.readouterr().out);assert off['drain']=='PASS'
+        mutations=list(world.mutations)
+        assert main(['live','off'])==0
+        capsys.readouterr();assert world.mutations==mutations

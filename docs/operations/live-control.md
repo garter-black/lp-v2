@@ -87,6 +87,23 @@ Opening eligibility also reports safe `details`: proven `liquidity_num`, the
 and authored `LIQUIDITY_BELOW_MIN`/`MIDPOINT_OUTSIDE_RANGE` blockers. Unknown
 numbers are omitted. Details retain the report's code/market/capital/time binding;
 they do not replace independent fee, in-play or account checks.
+Book freshness uses the independent local UTC clock at each receipt and again at
+joint completion: original book timestamps must be 0–60 seconds old at both
+boundaries, including exactly 60 seconds. Books created during the read can pass;
+future-at-receipt books, slow-read expiry, missing/invalid times and backward
+clocks cannot. The adapter preserves exchange timestamps and adds no tolerance
+or automatic retry. Preflight and opening diagnostics report completion time;
+decisions and valuations use time sampled after market reads. Decision time must
+not precede validated joint completion for the current read; missing or invalid
+completion evidence also refuses. Account facts,
+fills, receipts, frozen startup identity and the 10/30/600-second schedules retain
+their own time meaning.
+On confirmation, only the validated nested opening diagnostic `as_of` is excluded
+from comparing the two fresh reports. Displayed reports retain that timestamp.
+Liquidity, midpoint, thresholds, blockers, statuses, reasons, profile/window and
+identity changes still refuse; stale/future/missing authoritative observation
+times remain invalid. Offline verification does not establish current target or
+market readiness.
 A successful public CLOB market read must return a JSON object. For the in-play
 check, an absent `in_play` key or literal boolean `false` passes; explicit `true`,
 `null`, numbers or strings refuse. Failed reads, invalid JSON and non-object

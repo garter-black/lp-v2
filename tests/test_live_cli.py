@@ -7,6 +7,16 @@ from tests.test_live_sdk import CID,AT,WALLET,SIGNER
 from lp_v2.cli import parse_run
 
 
+@pytest.fixture(autouse=True)
+def historical_market_clock(monkeypatch):
+    from datetime import datetime
+    from lp_v2 import readonly_sdk
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):return AT
+    monkeypatch.setattr(readonly_sdk,'datetime',Clock)
+
+
 def live_args(tmp_path):
     signing=tmp_path/'signing'
     from eth_account import Account
@@ -258,6 +268,8 @@ def public_preflight_world(monkeypatch, wire, *, unavailable=False, stale=False)
         @classmethod
         def now(cls, tz=None): return public_at
     monkeypatch.setattr(cli, 'datetime', Clock)
+    from lp_v2 import readonly_sdk
+    monkeypatch.setattr(readonly_sdk, 'datetime', Clock)
     return seen, public
 
 
@@ -524,3 +536,104 @@ def test_live_factory_selects_explicit_builder_credentials(tmp_path,monkeypatch,
         assert 'sentinel' not in str(error.value)
         assert not state.exists() and len(seen)==3
     assert 'sentinel' not in str(capsys.readouterr())
+
+
+def timed_preflight_world(patch, case='normal'):
+    """External UTC and literal token-keyed HTTP timeline, independent of app policy."""
+    from datetime import datetime, timedelta
+    import httpx
+    from lp_v2 import cli, readonly_sdk
+    from tests.test_readonly_sdk import taker_fee_wire, AT
+    seen, public = public_preflight_world(patch, taker_fee_wire())
+    current = [AT]
+    group_started = [AT]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None): return current[0]
+    patch.setattr(cli, 'datetime', Clock)
+    patch.setattr(readonly_sdk, 'datetime', Clock, raising=False)
+    route = httpx.HTTPTransport.handle_request
+    def handle(transport, request):
+        if request.url.path=='/api/geoblock':
+            return httpx.Response(200,json=dict(blocked=False,country='US'))
+        response = route(transport, request)
+        if request.url.path == '/book':
+            token = request.url.params['token_id']
+            if token=='101':group_started[0]=current[0]
+            started=group_started[0]
+            receipt = {'101':2, '102':3}
+            stamp = {'101':1, '102':1}
+            if case=='future-receipt': stamp['101']=3; receipt['102']=4
+            if case=='aged-first': stamp={'101':0,'102':60}; receipt={'101':1,'102':61}
+            if case=='exact60': stamp={'101':0,'102':0}; receipt={'101':1,'102':60}
+            if case=='stale': stamp={'101':-61,'102':-61}
+            if case=='backward': receipt={'101':2,'102':1}; stamp={'101':0,'102':0}
+            current[0]=started+timedelta(seconds=receipt[token])
+            if case=='naive-clock': current[0]=current[0].replace(tzinfo=None)
+            if case=='failed': raise httpx.ReadTimeout('synthetic',request=request)
+            response.read(); data=response.json()
+            data['timestamp']=str(int((started+timedelta(seconds=stamp[token])).timestamp()*1000))
+            if case=='missing':data.pop('timestamp')
+            if case=='invalid':data['timestamp']='invalid'
+            if case=='naive-book':data['timestamp']='2026-11-02T00:00:01'
+            return httpx.Response(200,json=data)
+        return response
+    patch.setattr(httpx.HTTPTransport, 'handle_request', handle)
+    return public, seen, current
+
+
+@pytest.mark.parametrize('case', ['normal','future-receipt','aged-first','exact60','stale','backward','naive-clock','failed','missing','invalid','naive-book'])
+def test_preflight_uses_completed_book_observation_time(monkeypatch,capsys,case):
+    from lp_v2.cli import main
+    from tests.test_readonly_sdk import CID, AT
+    from datetime import timedelta
+    public,seen,current=timed_preflight_world(monkeypatch,case)
+    try:
+        code=main(['preflight','--market',CID,'--capital-usdc','100','--code-sha','a'*40])
+        report=json.loads(capsys.readouterr().out)
+        valid=case in ('normal','exact60')
+        assert (code==0) is valid
+        assert (report['checks']['books']['status']=='PASS') is valid
+        if valid:
+            expected=AT+timedelta(seconds=3 if case=='normal' else 60)
+            assert report['as_of']==expected.isoformat()
+            assert report['checks']['opening_eligibility']['details']['as_of']==expected.isoformat()
+        assert all(method=='GET' for method,_ in seen)
+    finally:public.close()
+
+
+@pytest.mark.parametrize('case',['normal','future-receipt','aged-first'])
+def test_factory_accepts_book_created_during_preflight(tmp_path,monkeypatch,case):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from polymarket import SecureClient,PublicClient
+    from tests.test_readonly_sdk import CID,AT
+    from tests.fakes.live_exchange import Exchange
+    from lp_v2.live_runtime import create_live_runner,MarketCheckFailure
+    import httpx
+    public,seen,current=timed_preflight_world(monkeypatch,case)
+    args,_=live_args(tmp_path);args[args.index('--market')+1]=CID
+    config=parse_run(args)
+    relay=tmp_path/'relayer.json'
+    relay.write_text(json.dumps(dict(key='synthetic-relayer',address=config.credentials.signer_address)));relay.chmod(0o600)
+    config=replace(config,started_at=AT,relayer_credentials_file=str(relay))
+    ex=Exchange(condition_id=CID);ex.sdk.wallet_type='POLY_PROXY';ex.sdk.wallet=config.credentials.wallet_address;ex.sdk.signer=config.credentials.signer_address
+    object.__setattr__(ex.sdk,'_ctx',SimpleNamespace(rpc=None,relayer=None))
+    created=[]
+    def create(**kw):
+        created.append(kw)
+        assert kw['wallet']==config.credentials.wallet_address and kw['credentials'].key=='synthetic'
+        return ex.sdk
+    monkeypatch.setattr(SecureClient,'create',create)
+    try:
+        if case=='normal':
+            Path(config.state_dir).mkdir(mode=0o700)
+            runner=create_live_runner(config,public=PublicClient(),http=httpx.Client())
+            assert len(created)==1 and runner.sdk.token_ids==('101','102') and runner.config.started_at==AT
+            assert runner.sdk.wallet==config.credentials.wallet_address and runner.sdk.signer==config.credentials.signer_address
+            runner.sdk.close();runner.observations.close()
+        else:
+            with pytest.raises(MarketCheckFailure):create_live_runner(config,public=PublicClient(),http=httpx.Client())
+            assert created==[] and not (Path(config.state_dir)/'journal.sqlite').exists()
+        assert ex.posts==[] and all(method=='GET' for method,_ in seen)
+    finally:public.close()

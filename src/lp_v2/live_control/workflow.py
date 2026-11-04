@@ -168,7 +168,16 @@ def on(profile, *, action_id=None, window_end=None, prepare_env=False):
     if load(profile['name'])!=profile or timestamp(window_end)<=datetime.now(UTC):
         return dict(status='UNKNOWN',reason='CONFIRMATION_TARGET_CHANGED')
     current=check(profile)
-    if current!=report or (current['status']!='PASS' and not preparable):
+    def confirmation_facts(sample):
+        # Reports are already validated. Only this displayed sampling timestamp
+        # is diagnostic; all business facts and all other equality stay intact.
+        from copy import deepcopy
+        facts=deepcopy(sample)
+        opening=facts['checks']['public_market']['checks']['opening_eligibility']
+        if 'details' in opening:
+            opening['details'].pop('as_of',None)
+        return facts
+    if confirmation_facts(current)!=confirmation_facts(report) or (current['status']!='PASS' and not preparable):
         return dict(status='UNKNOWN',reason='CONFIRMATION_FACTS_CHANGED',checks=current['checks'])
     record=dict(action='on',profile=profile,action_id=action_id,window_end=window_end,status='UNKNOWN')
     try:

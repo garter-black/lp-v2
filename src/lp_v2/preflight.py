@@ -5,7 +5,7 @@ import re
 from lp_v2.fee_policy import wire_maker_policy
 
 
-def check_market(audit, public, http, now, condition_id, metadata_validator):
+def check_market(audit, public, http, now, condition_id, metadata_validator, observation_time):
     names = ('market_identity','token_identity','fees','state','political','in_play',
              'rewards','constraints','books','opening_eligibility','market_inputs')
     checks = {name: dict(status='UNKNOWN',reason_code='DEPENDENCY_UNKNOWN') for name in names}
@@ -98,12 +98,16 @@ def check_market(audit, public, http, now, condition_id, metadata_validator):
         books_ok=True
         available=True
         first_prices=None
+        timestamps=[]
+        observed=now
         for token in tokens:
             try:
                 b=public.get_order_book(token_id=token)
+                observed=observation_time(observed)
+                timestamps.append(b.timestamp)
                 ok=(str(b.condition_id)==condition_id and str(b.token_id)==token
                     and b.tick_size==tick and b.min_order_size==minimum and b.bids and b.asks
-                    and b.timestamp is not None and 0<=(now-b.timestamp).total_seconds()<=60)
+                    and b.timestamp is not None and 0<=(observed-b.timestamp).total_seconds()<=60)
                 if ok:
                     bid=max(level.price for level in b.bids);ask=min(level.price for level in b.asks)
                     ok=bid.is_finite() and ask.is_finite() and 0<bid<ask<1
@@ -112,6 +116,12 @@ def check_market(audit, public, http, now, condition_id, metadata_validator):
                 books_ok=books_ok and bool(ok)
             except Exception:
                 available=False
+        try:
+            completed=observation_time(observed)
+            books_ok=books_ok and all(t is not None and 0<=(completed-t).total_seconds()<=60 for t in timestamps)
+            now=completed
+        except Exception:
+            books_ok=False
         if not books_ok: set_check('books',False,'BOOK_IDENTITY_CONSTRAINTS_OR_FRESHNESS')
         elif available: set_check('books',True,'OK')
         else: checks['books']['reason_code']='PUBLIC_READ_UNAVAILABLE'
@@ -159,5 +169,5 @@ def run_preflight(config):
     required=[c['status'] for c in checks.values() if c['status']!='NOT_CHECKED']
     status='BLOCKED' if 'BLOCKED' in required else 'UNKNOWN' if 'UNKNOWN' in required else 'PASS'
     return dict(scope='public_market',code_sha=config.code_sha,market=config.market,
-                capital_usdc=str(config.capital_usdc),as_of=config.started_at.isoformat(),
+                capital_usdc=str(config.capital_usdc),as_of=checks.get('opening_eligibility',{}).get('details',{}).get('as_of',config.started_at.isoformat()),
                 status=status,checks=checks)

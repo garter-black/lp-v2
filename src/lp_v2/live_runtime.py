@@ -71,6 +71,17 @@ class LiveRunner:
                     raise ValueError('owned order readback remains uncertain')
                 self._accounting_at = now
                 self._rows = [r for r in (self.observations.read_fixed_market(now,self.condition_id) if hasattr(self.observations,'read_fixed_market') else self.observations.read_markets(now)) if r['condition_id'] == self.condition_id]
+                accounting_at = now
+                completed = self.clock()
+                if (not isinstance(completed,datetime) or completed.tzinfo is None or completed.utcoffset() is None or completed < now):
+                    raise ValueError('local observation clock unavailable or backward')
+                for row in self._rows:
+                    if row.get('plan') is not None:
+                        observed = row.get('observation_completed_at')
+                        if (not isinstance(observed,datetime) or observed.tzinfo is None
+                                or observed.utcoffset() is None or not now <= observed <= completed):
+                            raise ValueError('market observation completion unavailable or discontinuous')
+                now = completed
                 plans = tuple(r['plan'] for r in self._rows if r.get('plan') is not None)
                 self._last_plans = plans
                 if any(tuple(t.token_id for t in p.market.tokens) != self.sdk.token_ids for p in plans):
@@ -95,7 +106,7 @@ class LiveRunner:
                     for request in decision.merge:
                         self.ledger.apply_merge(self.sdk.merge(request, at=now))
                 self._m4 = self._income_fields(now,plans)
-                self._freshness = dict(decision_as_of=now,scores_as_of=now,wallet_as_of=now)
+                self._freshness = dict(decision_as_of=now,scores_as_of=now,wallet_as_of=accounting_at)
 
             except Exception:
                 self._m4 = {key:UNKNOWN for key in (*M4_FIELDS,'net_profit')}
