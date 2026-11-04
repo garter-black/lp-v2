@@ -47,7 +47,9 @@ def check_market(audit, public, http, now, condition_id, metadata_validator):
     try:
         response=http.get('https://clob.polymarket.com/markets/'+condition_id)
         response.raise_for_status()
-        set_check('in_play',response.json().get('in_play') is False,'IN_PLAY_UNPROVEN')
+        state=response.json()
+        if not isinstance(state,dict):raise ValueError('market state object required')
+        set_check('in_play','in_play' not in state or state['in_play'] is False,'IN_PLAY_UNPROVEN')
     except Exception:
         checks['in_play']['reason_code']='PUBLIC_READ_UNAVAILABLE'
     def number(value, positive=False):

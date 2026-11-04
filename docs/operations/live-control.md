@@ -87,6 +87,11 @@ Opening eligibility also reports safe `details`: proven `liquidity_num`, the
 and authored `LIQUIDITY_BELOW_MIN`/`MIDPOINT_OUTSIDE_RANGE` blockers. Unknown
 numbers are omitted. Details retain the report's code/market/capital/time binding;
 they do not replace independent fee, in-play or account checks.
+A successful public CLOB market read must return a JSON object. For the in-play
+check, an absent `in_play` key or literal boolean `false` passes; explicit `true`,
+`null`, numbers or strings refuse. Failed reads, invalid JSON and non-object
+responses remain unknown/refused. Preflight and the SDK use this same rule; other
+market and private checks remain independent.
 No force/bypass flag exists.
 
 After separate authorization specifying target, wallet, exact code, market,

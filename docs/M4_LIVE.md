@@ -18,6 +18,9 @@ lp-v2 preflight --market <完整condition_id> --capital-usdc 100 --code-sha <40�
 `status`、`reason_code`。所有必需公开检查 PASS 才退出 0；BLOCKED 或 UNKNOWN 退出 2。
 身份不符时依赖该身份的检查保留 UNKNOWN，不使用返回的外来 token 查询订单簿。
 已能独立核验的费用、接单状态、奖励、政治分类、in_play、tick/最小量和簿时效分别报告。
+公开 CLOB 市场读取成功且返回 JSON 对象时，`in_play` 为布尔 `false` 或对象没有此键，
+均通过该项；显式 `true`、`null`、数字和字符串仍拒绝。读取失败、坏 JSON、非对象
+不能视为缺键。预检、SDK 固定市场与扫描读取使用同一规则，其余身份、费用、簿和账户门禁独立。
 `PUBLIC_READ_UNAVAILABLE` 表示未能读回；`FEE_POLICY_UNPROVEN`、`MARKET_STATE_INVALID`、
 `BOOK_IDENTITY_CONSTRAINTS_OR_FRESHNESS` 等是稳定的脱敏拒绝原因，不输出原始异常或载荷。
 

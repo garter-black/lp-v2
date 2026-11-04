@@ -725,7 +725,7 @@ def test_check_accepts_owned_readonly_flock_listener(combined_world,capsys):
 def test_on_keeps_public_gate_when_inventory_is_known(combined_world,capsys):
     from lp_v2.cli import main
     world=combined_world
-    world.http_overrides['/markets/'+world.profile['trading']['market_condition_id']]=(200,{})
+    world.http_overrides['/markets/'+world.profile['trading']['market_condition_id']]=(200,{'in_play':True})
     assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
     report=json.loads(capsys.readouterr().out)
     assert report['checks']['inventory_handoff']['status']=='PASS'
@@ -779,7 +779,7 @@ def test_typed_empty_exec_proof_covers_prepare_and_on(combined_world,monkeypatch
         assert info.st_uid==world.uid and info.st_mode & 0o777==(0o700 if path.is_dir() else 0o600)
     # Same frozen run can drain even when opening proof and public gate now fail.
     world.bus_exit=1
-    world.http_overrides['/markets/'+world.profile['trading']['market_condition_id']]=(200,{})
+    world.http_overrides['/markets/'+world.profile['trading']['market_condition_id']]=(200,{'in_play':True})
     assert main(['live','off'])==0
     stopped=json.loads(capsys.readouterr().out)
     assert stopped['status']=='PASS' and stopped['drain']=='PASS'
@@ -791,3 +791,39 @@ def test_typed_empty_exec_proof_covers_prepare_and_on(combined_world,monkeypatch
     assert all(path.read_bytes()==data for path,data in credentials.items())
     assert 'SECRET' not in json.dumps(result)+json.dumps(stopped)
     assert json.loads((state/'live-control-run.json').read_text())['run_id']==run_id
+
+
+@pytest.mark.parametrize('case',['missing','false','true','null','zero','one','string','array','invalid_json','http_failure','timeout'])
+def test_live_on_accepts_absent_in_play(combined_world,monkeypatch,capsys,case):
+    from lp_v2.cli import main
+    from tests.test_live_cli import in_play_http_response
+    from polymarket import SecureClient
+    world=combined_world;boundary=httpx.HTTPTransport.handle_request;seen=[]
+    def http(transport,request):
+        if request.url.path=='/markets/'+world.profile['trading']['market_condition_id']:
+            seen.append(request);assert request.method=='GET'
+            return in_play_http_response(request,case)
+        return boundary(transport,request)
+    monkeypatch.setattr(httpx.HTTPTransport,'handle_request',http)
+    monkeypatch.setattr(SecureClient,'create',lambda **kw:pytest.fail('host proof must not create signing client'))
+    monkeypatch.setattr('builtins.input',lambda _: 'on')
+    credentials={Path(world.profile['files'][key]):Path(world.profile['files'][key]).read_bytes() for key in ('signing_key','l2_credentials','relayer_credentials','run_env')}
+    code=main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])
+    result=json.loads(capsys.readouterr().out.splitlines()[-1])
+    if case in ('missing','false'):
+        assert code==0 and result['status']=='PASS' and result['verified_rounds']==2
+        assert world.mutations==[('stop','lp-v2.service'),('start','lp-v2-live.service')]
+        run_id=result['run_id'];state=Path(world.profile['files']['state_dir'])
+        assert json.loads((state/'live-control-run.json').read_text())['run_id']==run_id
+        assert main(['live','off'])==0
+        stopped=json.loads(capsys.readouterr().out)
+        assert stopped['status']=='PASS' and stopped['drain']=='PASS' and stopped['readonly_restored'] is True
+        count=len(world.mutations)
+        assert main(['live','off'])==0;capsys.readouterr()
+        assert len(world.mutations)==count and world.mutations.count(('start','lp-v2-live.service'))==1
+    else:
+        assert code==2 and result['status']!='PASS' and world.mutations==[]
+        assert result['checks']['public_market']['checks']['in_play']['status']!='PASS'
+    assert world.readonly and world.lease is None and seen
+    assert all(path.read_bytes()==data for path,data in credentials.items())
+    assert 'SECRET_SENTINEL' not in json.dumps(result)

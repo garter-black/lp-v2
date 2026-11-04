@@ -240,7 +240,7 @@ def test_conditional_inventory_is_independent_of_opening_eligibility():
     def http(request):
         seen.append(request)
         assert request.method=='GET'
-        if request.url.path.startswith('/markets/'):return httpx.Response(200,json={}) # missing in_play
+        if request.url.path.startswith('/markets/'):return httpx.Response(200,json={'in_play':True}) # opening remains independently blocked
         token=request.url.params['token_id']
         assert token in ('101','102') and request.url.params['asset_type']=='CONDITIONAL'
         assert request.headers['POLY_ADDRESS']==signer
@@ -248,6 +248,7 @@ def test_conditional_inventory_is_independent_of_opening_eligibility():
     for wire in (market_wire(liquidityNum='825.3674'),market_wire()):
         public,_=external_sdk([wire]);sdk=ReadOnlySDK(public=public,http=httpx.Client(transport=httpx.MockTransport(http)),credentials=creds)
         try:
+            assert sdk.public_preflight(AT,CID)['in_play']['status']=='BLOCKED'
             data=sdk.read_conditional_inventory(AT,CID)
             assert data==dict(condition_id=CID,token_ids=('101','102'),quantities={'101':D('0'),'102':D('1.234567')},as_of=AT.isoformat())
             for bad in (True,'NaN','-1','0.5',None):
@@ -264,3 +265,42 @@ def test_conditional_inventory_is_independent_of_opening_eligibility():
             with pytest.raises(ValueError):sdk.read_conditional_inventory(AT,CID)
             assert len(seen)==before
         finally:sdk.close()
+
+
+@pytest.mark.parametrize('case',['missing','false','true','null','zero','one','string','array','nonobject','json_null','invalid_json','http_failure','timeout'])
+def test_fixed_market_accepts_false_or_absent_in_play(monkeypatch,case):
+    import json
+    from lp_v2.readonly_sdk import ReadOnlySDK
+    from polymarket import SecureClient
+    seen=[]
+    def http(request):
+        seen.append(request)
+        assert request.method=='GET' and request.url.path=='/markets/'+CID
+        replies={'missing':{},'false':{'in_play':False},'true':{'in_play':True},'null':{'in_play':None},
+                 'zero':{'in_play':0},'one':{'in_play':1},'string':{'in_play':'false'},
+                 'array':[],'nonobject':'SECRET_SENTINEL','json_null':None}
+        if case=='timeout':raise httpx.ReadTimeout('SECRET_SENTINEL',request=request)
+        if case=='invalid_json':return httpx.Response(200,content=b'SECRET_SENTINEL',request=request)
+        if case=='http_failure':return httpx.Response(503,json={'error':'SECRET_SENTINEL'},request=request)
+        return httpx.Response(200,content=json.dumps(replies[case]).encode(),request=request)
+    monkeypatch.setattr(SecureClient,'create',lambda **kw:pytest.fail('observational SDK cannot create signing client'))
+    public,gets=external_sdk([taker_fee_wire()])
+    sdk=ReadOnlySDK(public=public,http=httpx.Client(transport=httpx.MockTransport(http)))
+    try:
+        if case in ('missing','false'):
+            fixed=sdk.read_fixed_market(AT,CID)[0]
+            assert fixed['eligible'] is True and fixed['skip_reason'] is None
+            assert fixed['plan'].market.condition_id==CID and fixed['plan'].market.in_play is False
+            assert tuple(t.token_id for t in fixed['plan'].market.tokens)==('101','102')
+        else:
+            with pytest.raises(ValueError,match='fixed market validation unavailable'):sdk.read_fixed_market(AT,CID)
+        scanned=sdk.read_markets(AT)
+        assert len(scanned)==1
+        row=scanned[0]
+        assert row['eligible'] is (case in ('missing','false'))
+        if case in ('missing','false'):
+            assert row['plan'] is not None and row['skip_reason'] is None
+        else:assert row['plan'] is None and row['skip_reason']
+        assert 'SECRET_SENTINEL' not in repr(row)
+        assert seen and gets and all(method=='GET' for method,url in gets)
+    finally:sdk.close()

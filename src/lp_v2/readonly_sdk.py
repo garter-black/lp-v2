@@ -146,10 +146,11 @@ class ReadOnlySDK:
             raise _Excluded(f'中间价 {midpoint} 超出 0.10–0.90')
         if not recovery and m.liquidity_num < 1000:
             raise _Excluded('流动性低于 1000')
-        # Typed Gamma omits in_play; absence is never interpreted as false.
+        # A successful CLOB object may omit in_play; explicit non-false remains excluded.
         response = self.__http.get('https://clob.polymarket.com/markets/' + cid)
         response.raise_for_status()
-        if response.json().get('in_play') is not False:
+        state=response.json()
+        if not isinstance(state,dict) or ('in_play' in state and state['in_play'] is not False):
             raise _Excluded('进行中状态未验证')
         books = []
         for token in m.tokens:
