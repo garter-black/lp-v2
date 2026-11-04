@@ -1,4 +1,6 @@
 """Read-only exchange boundary. No signing client or order execution capability."""
+from datetime import UTC, datetime
+from datetime import datetime as _DateTime
 from typing import Protocol
 from dataclasses import dataclass
 
@@ -39,15 +41,26 @@ class ReadOnlyPort(Protocol):
 
 
 class ReadOnlySDK:
-    def __init__(self, *, public=None, http=None, credentials=None, stop=None):
+    def __init__(self, *, public=None, http=None, credentials=None, stop=None, clock=None):
         from polymarket import PublicClient
         import httpx
         self.__public = public if public is not None else PublicClient()
         self.__http = http if http is not None else httpx.Client(timeout=5, follow_redirects=False, trust_env=False)
         self.__credentials = credentials
+        self.__clock = clock if clock is not None else lambda: datetime.now(UTC)
         self.__stop = stop
         from lp_v2.readonly_transport import ReadOnlyTransportAudit
         self.__audit = ReadOnlyTransportAudit(self.__public, self.__http)
+
+    def observation_time(self, previous):
+        """Independent local UTC observation; fail closed on unproven/backward time."""
+        current = self.__clock()
+        for value in (previous, current):
+            if not isinstance(value, _DateTime) or value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError('UTC observation time unavailable')
+        if current < previous:
+            raise ValueError('local observation clock moved backward')
+        return current.astimezone(UTC)
 
     def read_wallet(self, now):
         from decimal import Decimal
@@ -153,23 +166,28 @@ class ReadOnlySDK:
         if not isinstance(state,dict) or ('in_play' in state and state['in_play'] is not False):
             raise _Excluded('进行中状态未验证')
         books = []
+        observed = now
         for token in m.tokens:
             if self.__stop is not None and self.__stop.is_set():
                 raise InterruptedError('stopping')
             b = self.__public.get_order_book(token_id=token.token_id)
+            observed = self.observation_time(observed)
             if (str(b.condition_id) != cid or str(b.token_id) != token.token_id
                     or b.tick_size != m.tick_size or b.min_order_size != m.min_order_size or not b.bids or not b.asks
-                    or b.timestamp is None or not 0 <= (now-b.timestamp).total_seconds() <= 60):
+                    or b.timestamp is None or not 0 <= (observed-b.timestamp).total_seconds() <= 60):
                 raise _Excluded('订单簿身份、约束或时效未验证')
             bid = max(level.price for level in b.bids)
             ask = min(level.price for level in b.asks)
             if not bid.is_finite() or not ask.is_finite() or not 0 < bid < ask < 1:
                 raise _Excluded('订单簿价格无效')
             books.append(Book(cid, token.token_id, bid, ask, b.timestamp))
+        completed = self.observation_time(observed)
+        if any(not 0 <= (completed-b.observed_at).total_seconds() <= 60 for b in books):
+            raise _Excluded('订单簿身份、约束或时效未验证')
         m = replace(m, best_bid=float(books[0].best_bid), best_ask=float(books[0].best_ask), in_play=False)
         eligible = eligible_market(m)
         midpoint = (books[0].best_bid + books[0].best_ask) / 2
-        return dict(score=str(score_market(m).score), eligible=eligible,
+        return dict(score=str(score_market(m).score), eligible=eligible, observation_completed_at=completed,
                     skip_reason=None if eligible else f'中间价 {midpoint} 或流动性不符合条件',
                     plan=MarketPlan(m, tuple(books), max(m.min_order_size, m.rewards_min_size), (D('0'), D('0'))) if eligible or recovery else None)
 
@@ -376,4 +394,4 @@ class ReadOnlySDK:
 
     def public_preflight(self, now, condition_id):
         from lp_v2.preflight import check_market
-        return check_market(self.__audit, self.__public, self.__http, now, condition_id, self.__metadata_market)
+        return check_market(self.__audit, self.__public, self.__http, now, condition_id, self.__metadata_market, self.observation_time)
