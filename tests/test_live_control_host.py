@@ -159,6 +159,7 @@ def combined_world(target, config_home, monkeypatch):
     world=SimpleNamespace(profile=target,clock=datetime.now(UTC),readonly=True,lease=None,
         mutations=[],requests=[],http_requests=[],authority=True,uid=os.getuid(),gid=os.getgid(),
         process_identity_valid=True,http_overrides={},stale_public=False,context=threading.local(),unit_overrides={},proc_argv=None,running_argv=None,extra_processes={},legacy_active=False,legacy_enabled=False,legacy_queries=[],conditional={'101':'0','102':'0'},conditional_status=200,proc_mounts='proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n',gone_processes=set())
+    world.readonly_wrapper=False;world.listener_pid=11223;world.readonly_bad_args=False;world.readonly_bad_uid=False;world.readonly_bad_cgroup=False;world.readonly_race=False;world.readonly_reads=0;world.listener_extra=False;world.readonly_gone=False
     world.context.ids=(0,0,0)
     class Clock(datetime):
         @classmethod
@@ -187,6 +188,20 @@ def combined_world(target, config_home, monkeypatch):
     original_open=os.open;original_resolve=Path.resolve
     monkeypatch.setattr(os,'open',lambda path,*args,**kw:original_open(aliases.get(str(path),path),*args,**kw))
     monkeypatch.setattr(Path,'resolve',lambda path,*args,**kw:original_resolve(Path(aliases.get(str(path),path)),*args,**kw))
+    original_lstat=Path.lstat
+    world.repo_access_times=False;world.repo_access_count=0
+    world.repo_owner=0;world.repo_mode=0o755;world.repo_origin='https://github.com/raymizzou/lp-v2.git';world.repo_sha=target['release']['expected_sha'];world.git_calls=[]
+    (root/'repo/.git').mkdir(parents=True)
+    def immutable_lstat(path,*a,**kw):
+        info=original_lstat(path,*a,**kw)
+        if path==root or path in root.parents or path==root/'repo' or root/'repo' in path.parents:
+            world.repo_access_count+=1
+            values=list(info)
+            if world.repo_access_times:values[7]=world.repo_access_count
+            values[4]=world.repo_owner;values[0]=(info.st_mode & ~0o777)|world.repo_mode
+            return os.stat_result(values)
+        return info
+    monkeypatch.setattr(Path,'lstat',immutable_lstat)
     original_stat=Path.stat;original_read_bytes=Path.read_bytes;original_read_text=Path.read_text;original_iterdir=Path.iterdir
     def proc_entries(path):
         if str(path)=='/proc':return iter([Path('/proc')/str(pid) for pid in [os.getpid(),*world.extra_processes]])
@@ -195,9 +210,16 @@ def combined_world(target, config_home, monkeypatch):
     def proc_stat(path,*a,**kw):
         if str(path) in {f'/proc/{pid}' for pid in world.gone_processes}:raise FileNotFoundError('synthetic gone process')
         if str(path).startswith('/proc/'):
-            return SimpleNamespace(st_uid=world.uid if world.process_identity_valid else world.uid+1)
+            if str(path) in ('/proc/11223','/proc/11224') and world.readonly_gone:raise FileNotFoundError()
+            return SimpleNamespace(st_uid=world.uid if world.process_identity_valid and not (world.readonly_bad_uid and str(path) in ('/proc/11223','/proc/11224')) else world.uid+1)
         return original_stat(Path(aliases.get(str(path),path)),*a,**kw)
+    def readonly_args():
+        return [str(release/'.venv/bin/lp-v2'),'run','--capital-usdc','100','--code-sha',target['release']['expected_sha'],'--credentials-file','/etc/lp-v2/credentials.json']
     def proc_bytes(path,*a,**kw):
+        if str(path) in ('/proc/11223/cmdline','/proc/11224/cmdline'):
+            args=['/usr/bin/flock','-n',str(root/'runtime.lock'),str(root/'current/run-readonly')] if world.readonly_wrapper and str(path)=='/proc/11223/cmdline' else readonly_args()
+            if world.readonly_bad_args:args=args+['--live']
+            return ('\0'.join(args)+'\0').encode()
         for pid,args in world.extra_processes.items():
             if str(path)==f'/proc/{pid}/cmdline':
                 if isinstance(args,Exception):raise args
@@ -206,6 +228,12 @@ def combined_world(target, config_home, monkeypatch):
             return ('\0'.join(world.proc_argv or world.running_argv or ['lp_v2'])+'\0').encode()
         return original_read_bytes(path,*a,**kw)
     def proc_text(path,*a,**kw):
+        if str(path) in ('/proc/11223/stat','/proc/11224/stat'):
+            world.readonly_reads+=1
+            return '1 (flock) '+' '.join(['S']+['0']*18+[str(world.readonly_reads if world.readonly_race else 321)])
+        if str(path) in ('/proc/11223/cgroup','/proc/11224/cgroup'):
+            return '0::/system.slice/'+('foreign.service' if world.readonly_bad_cgroup else 'lp-v2.service')+'\n'
+        if str(path)=='/proc/11223/task/11223/children':return '11224' if world.readonly_wrapper else ''
         if str(path)=='/proc/mounts':return world.proc_mounts
         if str(path)=='/proc/sys/kernel/random/boot_id':return 'synthetic-boot'
         if str(path)==f'/proc/{os.getpid()}/stat':return '1 (lp-v2) '+' '.join(['S']+['0']*18+['123'])
@@ -222,8 +250,11 @@ def combined_world(target, config_home, monkeypatch):
             WorkingDirectory=str(root/'current'),Type='simple',UMask='0077',NoNewPrivileges='yes',KillSignal='15',
             ExecStartPre='',ExecStartPost='',ExecCondition='',ExecStopPost='',ExecReload='',Environment='',PassEnvironment='',
             UnsetEnvironment='',RootDirectory='',RootImage='',DynamicUser='no',PAMName='',ExecSearchPath='',SupplementaryGroups='')
+        if not live:
+            values['ControlGroup']='/system.slice/lp-v2.service'
+            values['ExecStart']=' '.join(['/usr/bin/flock','-n',str(root/'runtime.lock'),str(root/'current/run-readonly')]) if world.readonly_wrapper else ' '.join(readonly_args())
         if live:values.update(world.unit_overrides)
-        return values
+        return {k:v for k,v in values.items() if v is not None}
     def child(request):
         # OS identity facade applies only inside the real short-lived target invocation.
         world.context.ids=(0,0,0)
@@ -240,6 +271,11 @@ def combined_world(target, config_home, monkeypatch):
             code,output=child(request)
             return subprocess.CompletedProcess(argv,code,output,'')
         if argv[0]=='git':
+            world.git_calls.append(argv)
+            if 'safe.directory='+str(root/'repo') not in argv:
+                return subprocess.CompletedProcess(argv,128,'','fatal: detected dubious ownership in repository')
+            if argv[-2:]==['--get','remote.origin.url']:return subprocess.CompletedProcess(argv,0,world.repo_origin+'\n','')
+            if 'rev-parse' in argv:return subprocess.CompletedProcess(argv,0,world.repo_sha+'\n','')
             text=source_path+'\n' if 'ls-tree' in argv else launcher if argv[-1].endswith(':deploy/run-live') else source
             return subprocess.CompletedProcess(argv,0,text,'')
         if 'preflight' in argv:
@@ -249,6 +285,14 @@ def combined_world(target, config_home, monkeypatch):
             transform=getattr(world,'public_report_transform',None)
             if transform is not None:value=json.dumps(transform(json.loads(value)))
             return subprocess.CompletedProcess(argv,code,value,'')
+        if argv[0]=='busctl':
+            from lp_v2.live_control import privileges
+            assert privileges.geteuid()==world.uid
+            assert argv[:5]==['busctl','--json=short','--system','get-property','org.freedesktop.systemd1']
+            assert argv[5] in ('/org/freedesktop/systemd1/unit/lp_2dv2_2dlive_2eservice','/org/freedesktop/systemd1/unit/lp_2dv2_2eservice')
+            assert argv[6]=='org.freedesktop.systemd1.Service'
+            assert argv[7] in ('ExecStartPre','ExecStartPost','ExecCondition','ExecStopPost','ExecReload')
+            return subprocess.CompletedProcess(argv,getattr(world,'bus_exit',0),getattr(world,'bus_data','{"type":"a(sasbttttuii)","data":[]}'),'')
         if argv[0]=='systemctl':
             action,unit=argv[1:3]
             if unit=='open-trader-prediction.service':
@@ -286,8 +330,8 @@ def combined_world(target, config_home, monkeypatch):
                 world.lease.finish(0);world.lease.__exit__(None,None,None);world.lease=None;world.running_argv=None
             return subprocess.CompletedProcess(argv,0,'','')
         if argv[0]=='ss':
-            pid=os.getpid() if world.lease else 11223 if world.readonly else None
-            return subprocess.CompletedProcess(argv,0,'' if pid is None else f'LISTEN 127.0.0.1:8765 users:(("lp-v2",pid={pid},fd=3))','')
+            pid=os.getpid() if world.lease else world.listener_pid if world.readonly else None
+            return subprocess.CompletedProcess(argv,0,'' if pid is None else f'LISTEN 127.0.0.1:8765 users:(("lp-v2",pid={pid},fd=3))'+('\nLISTEN 127.0.0.1:8765 users:(("foreign",pid=99123,fd=3))' if world.listener_extra else ''),'')
         pytest.fail('unexpected external command: '+repr(argv))
     def http(transport,request):
         world.http_requests.append(request)
@@ -622,3 +666,164 @@ def test_new_state_rejects_orphaned_journal_history(combined_world,monkeypatch,c
         artifact.write_bytes(b'hot-or-unsettled-history');artifact.chmod(0o600)
         refused();artifact.unlink()
     assert main(['live','check'])==0;capsys.readouterr();assert snapshot()==closed
+
+
+def test_check_reads_pinned_immutable_root_repository(combined_world,capsys):
+    from lp_v2.cli import main
+    world=combined_world;world.repo_access_times=True
+    def check():
+        main(['live','check']);return json.loads(capsys.readouterr().out)['checks']
+    assert check()['artifacts']['status']=='PASS'
+    assert world.git_calls and all('safe.directory='+world.profile['release']['root']+'/repo' in cmd for cmd in world.git_calls)
+    for field,bad in [('repo_owner',world.uid),('repo_mode',0o777),('repo_origin','https://github.com/foreign/repo.git'),('repo_sha','f'*40)]:
+        old=getattr(world,field);setattr(world,field,bad)
+        assert check()['artifacts']['status']!='PASS'
+        setattr(world,field,old)
+    gitdir=Path(world.profile['release']['root'])/'repo/.git'
+    config=gitdir/'config';config.write_text('[include]\npath = /foreign/config\n')
+    assert check()['artifacts']['status']!='PASS'
+    config.unlink()
+    gitdir.rmdir();gitdir.symlink_to(gitdir.parent.parent/'releases',target_is_directory=True)
+    assert check()['artifacts']['status']!='PASS'
+    assert world.mutations==[] and world.readonly
+    assert not any('--global' in cmd or '--system' in cmd or '--add' in cmd for cmd in world.git_calls)
+
+
+def test_check_proves_empty_systemd_exec_properties(combined_world,capsys):
+    from lp_v2.cli import main
+    world=combined_world
+    world.unit_overrides.update({k:None for k in ('ExecStartPre','ExecStartPost','ExecCondition','ExecStopPost','ExecReload')})
+    def check():
+        main(['live','check']);return json.loads(capsys.readouterr().out)['checks']['service']['status']
+    assert check()=='PASS'
+    for raw in ('{}','null','{"type":"s","data":[]}','{"type":"a(sasbttttuii)","data":["override"]}','SECRET'):
+        world.bus_data=raw;assert check()!='PASS'
+    world.bus_data='{"type":"a(sasbttttuii)","data":[]}'
+    world.bus_exit=1;assert check()!='PASS'
+    world.bus_exit=0;world.unit_overrides['ExecReload']='/bin/foreign';assert check()!='PASS'
+    from lp_v2.live_control.host import system_properties
+    with pytest.raises(ValueError):system_properties('foreign.service')
+    assert world.mutations==[] and world.readonly
+
+
+def test_check_accepts_owned_readonly_flock_listener(combined_world,capsys):
+    from lp_v2.cli import main
+    world=combined_world;world.readonly_wrapper=True;world.listener_pid=11224
+    def check():
+        main(['live','check']);return json.loads(capsys.readouterr().out)['checks']['port']['status']
+    assert check()=='PASS'
+    world.readonly_wrapper=False;world.listener_pid=11223
+    assert check()=='PASS'
+    for wrapper in (False,True):
+        world.readonly_wrapper=wrapper;world.listener_pid=11224 if wrapper else 11223
+        for field in ('readonly_bad_args','readonly_bad_uid','readonly_bad_cgroup','readonly_race','listener_extra','readonly_gone'):
+            setattr(world,field,True);assert check()!='PASS';setattr(world,field,False)
+        world.listener_pid=99123;assert check()!='PASS'
+    assert world.mutations==[] and world.readonly
+
+
+def test_on_keeps_public_gate_when_inventory_is_known(combined_world,capsys):
+    from lp_v2.cli import main
+    world=combined_world
+    world.http_overrides['/markets/'+world.profile['trading']['market_condition_id']]=(200,{'in_play':True})
+    assert main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])==2
+    report=json.loads(capsys.readouterr().out)
+    assert report['checks']['inventory_handoff']['status']=='PASS'
+    assert report['checks']['public_market']['checks']['in_play']['status']=='BLOCKED'
+    assert report['status']!='PASS' and world.mutations==[] and world.readonly
+
+
+@pytest.mark.parametrize('prepare_env',[False,True],ids=['on','prepare-on'])
+def test_typed_empty_exec_proof_covers_prepare_and_on(combined_world,monkeypatch,capsys,prepare_env):
+    from lp_v2.cli import main
+    world=combined_world
+    world.unit_overrides.update({key:None for key in ('ExecStartPre','ExecStartPost','ExecCondition','ExecStopPost','ExecReload')})
+    monkeypatch.setattr('builtins.input',lambda _: 'on')
+    assert main(['live','check'])==0
+    capsys.readouterr()
+    env=Path(world.profile['files']['run_env'])
+    original=env.read_bytes()
+    credentials={Path(world.profile['files'][key]):Path(world.profile['files'][key]).read_bytes()
+                 for key in ('signing_key','l2_credentials','relayer_credentials')}
+    if prepare_env:env.write_bytes(original.replace(b'LP_V2_CAPITAL_USDC=100',b'LP_V2_CAPITAL_USDC=80'))
+    before=env.read_bytes()
+    args=['live','on','--window-end','2099-01-01T00:00:00+00:00']+(['--prepare-run-env'] if prepare_env else [])
+    # Fail only the target consumer's fresh proof after public readiness passed.
+    boundary=subprocess.run;scenario={}
+    def external(argv,**kw):
+        if argv[0]=='busctl' and scenario and world.requests[-1]['action'] in ('prepare','on'):
+            from lp_v2.live_control import privileges
+            assert privileges.geteuid()==world.uid
+            return subprocess.CompletedProcess(argv,scenario['exit'],scenario['data'],'')
+        return boundary(argv,**kw)
+    monkeypatch.setattr(subprocess,'run',external)
+    for code,data in ((0,'{"type":"a(sasbttttuii)","data":["override"]}'),(0,'{"type":"s","data":[]}'),(1,'')):
+        scenario.update(exit=code,data=data)
+        assert main(args)==2
+        refused=json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert refused['status']!='PASS' and world.mutations==[] and world.readonly
+        assert env.read_bytes()==before
+    scenario.clear()
+    assert main(args)==0
+    result=json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert result['status']=='PASS' and result['verified_rounds']==2
+    run_id=result['run_id']
+    assert world.mutations==[('stop','lp-v2.service'),('start','lp-v2-live.service')]
+    assert dict(line.split('=',1) for line in env.read_text().splitlines())==dict(
+        LP_V2_CAPITAL_USDC='100',LP_V2_MARKET='0x'+'1'*64,LP_V2_CODE_SHA='a'*40)
+    if not prepare_env:assert env.read_bytes()==original
+    if prepare_env:assert env.with_name(env.name+'.bak').read_bytes()==before
+    state=Path(world.profile['files']['state_dir'])
+    for path in state.rglob('*'):
+        info=path.stat()
+        assert info.st_uid==world.uid and info.st_mode & 0o777==(0o700 if path.is_dir() else 0o600)
+    # Same frozen run can drain even when opening proof and public gate now fail.
+    world.bus_exit=1
+    world.http_overrides['/markets/'+world.profile['trading']['market_condition_id']]=(200,{'in_play':True})
+    assert main(['live','off'])==0
+    stopped=json.loads(capsys.readouterr().out)
+    assert stopped['status']=='PASS' and stopped['drain']=='PASS'
+    assert stopped['readonly_restored'] is True and world.readonly and world.lease is None
+    count=len(world.mutations)
+    assert main(['live','off'])==0
+    capsys.readouterr()
+    assert len(world.mutations)==count and world.mutations.count(('start','lp-v2-live.service'))==1
+    assert all(path.read_bytes()==data for path,data in credentials.items())
+    assert 'SECRET' not in json.dumps(result)+json.dumps(stopped)
+    assert json.loads((state/'live-control-run.json').read_text())['run_id']==run_id
+
+
+@pytest.mark.parametrize('case',['missing','false','true','null','zero','one','string','array','invalid_json','http_failure','timeout'])
+def test_live_on_accepts_absent_in_play(combined_world,monkeypatch,capsys,case):
+    from lp_v2.cli import main
+    from tests.test_live_cli import in_play_http_response
+    from polymarket import SecureClient
+    world=combined_world;boundary=httpx.HTTPTransport.handle_request;seen=[]
+    def http(transport,request):
+        if request.url.path=='/markets/'+world.profile['trading']['market_condition_id']:
+            seen.append(request);assert request.method=='GET'
+            return in_play_http_response(request,case)
+        return boundary(transport,request)
+    monkeypatch.setattr(httpx.HTTPTransport,'handle_request',http)
+    monkeypatch.setattr(SecureClient,'create',lambda **kw:pytest.fail('host proof must not create signing client'))
+    monkeypatch.setattr('builtins.input',lambda _: 'on')
+    credentials={Path(world.profile['files'][key]):Path(world.profile['files'][key]).read_bytes() for key in ('signing_key','l2_credentials','relayer_credentials','run_env')}
+    code=main(['live','on','--window-end','2099-01-01T00:00:00+00:00'])
+    result=json.loads(capsys.readouterr().out.splitlines()[-1])
+    if case in ('missing','false'):
+        assert code==0 and result['status']=='PASS' and result['verified_rounds']==2
+        assert world.mutations==[('stop','lp-v2.service'),('start','lp-v2-live.service')]
+        run_id=result['run_id'];state=Path(world.profile['files']['state_dir'])
+        assert json.loads((state/'live-control-run.json').read_text())['run_id']==run_id
+        assert main(['live','off'])==0
+        stopped=json.loads(capsys.readouterr().out)
+        assert stopped['status']=='PASS' and stopped['drain']=='PASS' and stopped['readonly_restored'] is True
+        count=len(world.mutations)
+        assert main(['live','off'])==0;capsys.readouterr()
+        assert len(world.mutations)==count and world.mutations.count(('start','lp-v2-live.service'))==1
+    else:
+        assert code==2 and result['status']!='PASS' and world.mutations==[]
+        assert result['checks']['public_market']['checks']['in_play']['status']!='PASS'
+    assert world.readonly and world.lease is None and seen
+    assert all(path.read_bytes()==data for path,data in credentials.items())
+    assert 'SECRET_SENTINEL' not in json.dumps(result)

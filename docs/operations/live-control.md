@@ -81,6 +81,17 @@ subchecks appear under `checks.public_market.checks` with their fixed
 `reason_code` (for example fees or book freshness). Unknown external detail is
 `CHECK_DETAIL_UNAVAILABLE`; stale/protocol/identity evidence has an explicit safe
 reason. Raw error text, arbitrary subcheck keys and private paths are not reports.
+Opening eligibility also reports safe `details`: proven `liquidity_num`, the
+`minimum_liquidity` of `1000`, executable-book `midpoint` when verified, the
+`minimum_midpoint`/`maximum_midpoint` bounds of `0.10`/`0.90`, observation `as_of`
+and authored `LIQUIDITY_BELOW_MIN`/`MIDPOINT_OUTSIDE_RANGE` blockers. Unknown
+numbers are omitted. Details retain the report's code/market/capital/time binding;
+they do not replace independent fee, in-play or account checks.
+A successful public CLOB market read must return a JSON object. For the in-play
+check, an absent `in_play` key or literal boolean `false` passes; explicit `true`,
+`null`, numbers or strings refuse. Failed reads, invalid JSON and non-object
+responses remain unknown/refused. Preflight and the SDK use this same rule; other
+market and private checks remain independent.
 No force/bypass flag exists.
 
 After separate authorization specifying target, wallet, exact code, market,
@@ -178,7 +189,17 @@ handles one request; no privileged background process remains.
 
 Check verifies installed source against the pinned repository object and release,
 file permissions, environment, journal identity, effective services and port
-ownership. Existing draft units have an on-failure restart policy; a readiness
+ownership. Fixed Git reads permit an exact per-command `safe.directory` only
+after proving the repository, its control tree and ancestors immutable and
+root-owned, with the expected origin and pinned commit. External config includes,
+alternate object stores and symlink escapes refuse proof. No Git configuration is
+written. When systemctl omits one of the five optional Exec properties, only a
+successful unprivileged typed empty-array D-Bus read for that fixed unit/property
+proves absence; missing, ambiguous or nonempty evidence still refuses readiness.
+The readonly listener may be the verified direct executor or the direct child of
+the shipped flock wrapper. Both process identities, service UID, fixed cgroup
+and exact arguments must remain stable; extra or unrelated listeners fail proof.
+These observations never stop the readonly service. Existing draft units have an on-failure restart policy; a readiness
 check requiring no automatic retry does not silently change them. An effective
 approved service configuration must already meet the contract. The effective
 User/Group, exact single ExecStart/ExecStop, working directory, environment file,
@@ -208,7 +229,12 @@ exclusivity or inventory knowledge in unrelated markets.
 
 The two selected tokens come from verified fixed-market metadata. Authenticated
 GET `/balance-allowance` with CONDITIONAL/token_id/signature_type=1 reads each
-quantity in integer base units (divided by 1,000,000). A new state needs both
+quantity in integer base units (divided by 1,000,000). Fresh exact condition and
+binary Yes/No token identity authorize this observational GET independently of
+opening eligibility. An in-play or liquidity refusal still blocks `on`; it does
+not turn an unread balance into zero. `CONDITIONAL_IDENTITY_UNAVAILABLE` separates
+metadata/account identity failures from `CONDITIONAL_BALANCE_UNAVAILABLE` for
+actual balance HTTP/parsing failures. A new state needs both
 quantities explicitly zero; an empty directory cannot establish that. Existing
 history needs a matching latest stopped process/control/result, full owned
 wallet/market/token identity, successful complete reconciliation, terminal known

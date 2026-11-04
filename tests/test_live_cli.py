@@ -349,3 +349,124 @@ def test_live_startup_reports_safe_market_failure(tmp_path,monkeypatch,capsys):
         assert constructed==[] and all(m=='GET' for m,_ in seen)
         assert not (tmp_path/'state'/'journal.sqlite').exists()
     finally: public.close()
+
+
+def test_preflight_explains_liquidity_threshold(monkeypatch,capsys):
+    import httpx
+    from lp_v2.cli import main
+    from tests.test_readonly_sdk import taker_fee_wire,CID,AT
+    for liquidity,prices,expected,blockers in [
+        ('825.3674',('0.36','0.37'),'BLOCKED',['LIQUIDITY_BELOW_MIN']),
+        ('999.9999',('0.36','0.37'),'BLOCKED',['LIQUIDITY_BELOW_MIN']),
+        ('1000',('0.36','0.37'),'PASS',[]),
+        ('1000',('0.92','0.94'),'BLOCKED',['MIDPOINT_OUTSIDE_RANGE']),
+        (True,('0.36','0.37'),'BLOCKED',[]),
+        ('NaN',('0.36','0.37'),'BLOCKED',[]),
+        (None,('0.36','0.37'),'BLOCKED',[])]:
+        with monkeypatch.context() as patch:
+            wire=taker_fee_wire();wire['liquidityNum']=liquidity
+            _,public=public_preflight_world(patch,wire)
+            route=httpx.HTTPTransport.handle_request
+            def http(transport,request):
+                response=route(transport,request)
+                if request.url.path=='/book' and request.url.params['token_id']=='101':
+                    response.read();data=response.json()
+                    data['bids'][0]['price'],data['asks'][0]['price']=prices
+                    return httpx.Response(200,json=data)
+                return response
+            patch.setattr(httpx.HTTPTransport,'handle_request',http)
+            try:
+                code=main(['preflight','--market',CID,'--capital-usdc','100','--code-sha','a'*40])
+                report=json.loads(capsys.readouterr().out);row=report['checks']['opening_eligibility']
+                assert row['status']==expected and code==(0 if expected=='PASS' else 2)
+                details=row['details']
+                assert details['minimum_liquidity']=='1000'
+                assert details['minimum_midpoint']=='0.10' and details['maximum_midpoint']=='0.90'
+                assert details['as_of']==AT.isoformat() and details['blockers']==blockers
+                assert details['midpoint']==('0.93' if prices[0]=='0.92' else '0.365')
+                if liquidity in (True,'NaN',None):assert 'liquidity_num' not in details
+                else:assert details['liquidity_num']==liquidity
+            finally:public.close()
+
+
+def in_play_http_response(request,case):
+    """Literal external CLOB replies; no internal policy decisions are faked."""
+    import httpx
+    data={'missing':{},'false':{'in_play':False},'true':{'in_play':True},
+          'null':{'in_play':None},'zero':{'in_play':0},'one':{'in_play':1},
+          'string':{'in_play':'false'},'array':[],'nonobject':'SECRET_SENTINEL','json_null':None}
+    if case=='timeout':raise httpx.ReadTimeout('SECRET_SENTINEL',request=request)
+    if case=='invalid_json':return httpx.Response(200,content=b'SECRET_SENTINEL',request=request)
+    if case=='http_failure':return httpx.Response(503,json={'error':'SECRET_SENTINEL'},request=request)
+    return httpx.Response(200,content=json.dumps(data[case]).encode(),request=request)
+
+
+@pytest.mark.parametrize('case',['missing','false','true','null','zero','one','string','array','nonobject','json_null','invalid_json','http_failure','timeout'])
+def test_preflight_accepts_false_or_absent_in_play(monkeypatch,capsys,case):
+    import httpx,subprocess
+    from polymarket import SecureClient
+    from lp_v2.cli import main
+    from tests.test_readonly_sdk import taker_fee_wire,CID,AT
+    _,public=public_preflight_world(monkeypatch,taker_fee_wire())
+    route=httpx.HTTPTransport.handle_request;seen=[]
+    def http(transport,request):
+        seen.append(request)
+        assert request.method=='GET'
+        assert request.url.path in ('/markets/keyset','/markets/'+CID,'/book')
+        if request.url.path=='/markets/'+CID:return in_play_http_response(request,case)
+        return route(transport,request)
+    monkeypatch.setattr(httpx.HTTPTransport,'handle_request',http)
+    monkeypatch.setattr(SecureClient,'create',lambda **kw:pytest.fail('public preflight cannot create signing client'))
+    monkeypatch.setattr(subprocess,'run',lambda *args,**kw:pytest.fail('public preflight cannot mutate a service'))
+    try:
+        code=main(['preflight','--market',CID,'--capital-usdc','100','--code-sha','a'*40])
+        report=json.loads(capsys.readouterr().out)
+        allowed=case in ('missing','false')
+        expected='PASS' if allowed else 'UNKNOWN' if case in ('array','nonobject','json_null','invalid_json','http_failure','timeout') else 'BLOCKED'
+        assert report['checks']['in_play']['status']==expected and report['status']==expected
+        assert code==(0 if allowed else 2)
+        assert report['market']==CID and report['code_sha']=='a'*40 and report['capital_usdc']=='100' and report['as_of']==AT.isoformat()
+        assert all(report['checks'][k]['status']=='NOT_CHECKED' for k in ('private_identity','relayer','allowance'))
+        assert 'SECRET_SENTINEL' not in json.dumps(report) and seen
+    finally:public.close()
+
+
+@pytest.mark.parametrize('case',['missing','false','true','null','http_failure','timeout'])
+def test_live_factory_accepts_absent_in_play(tmp_path,monkeypatch,case):
+    from types import SimpleNamespace
+    import httpx
+    from lp_v2.live_runtime import create_live_runner,MarketCheckFailure
+    from polymarket import SecureClient
+    from tests.test_readonly_sdk import external_sdk,taker_fee_wire,CID,AT
+    from tests.fakes.live_exchange import Exchange
+    args,_=live_args(tmp_path);args[args.index('--market')+1]=CID
+    config=parse_run(args)
+    relay=tmp_path/'relayer.json'
+    relay.write_text(json.dumps(dict(key='synthetic-relayer',address=config.credentials.signer_address)));relay.chmod(0o600)
+    config=replace(config,started_at=AT,relayer_credentials_file=str(relay))
+    from pathlib import Path
+    Path(config.state_dir).mkdir(mode=0o700)
+    ex=Exchange();ex.sdk.wallet_type='POLY_PROXY';ex.sdk.wallet=config.credentials.wallet_address;ex.sdk.signer=config.credentials.signer_address
+    object.__setattr__(ex.sdk,'_ctx',SimpleNamespace(rpc=None,relayer=None))
+    created=[]
+    def create(**kwargs):
+        created.append(kwargs)
+        assert kwargs['wallet']==config.credentials.wallet_address
+        assert kwargs['credentials'].key=='synthetic' and kwargs['api_key'].key=='synthetic-relayer'
+        return ex.sdk
+    monkeypatch.setattr(SecureClient,'create',create)
+    public,_=external_sdk([taker_fee_wire()])
+    http=httpx.Client(transport=httpx.MockTransport(lambda request:in_play_http_response(request,case)))
+    if case in ('missing','false'):
+        runner=create_live_runner(config,public=public,http=http)
+        try:
+            assert len(created)==1 and runner.config==config
+            assert runner.condition_id==CID and runner.sdk.condition_id==CID and runner.sdk.token_ids==('101','102')
+            assert runner.sdk.wallet==config.credentials.wallet_address and runner.sdk.signer==config.credentials.signer_address
+            assert runner.sdk.owner=='lp-v2:'+config.credentials.wallet_address.lower()
+            assert ex.posts==[]
+            ex.sdk.create_limit_order.assert_not_called();ex.sdk.cancel_order.assert_not_called()
+        finally:runner.sdk.close();runner.observations.close()
+    else:
+        with pytest.raises(MarketCheckFailure):create_live_runner(config,public=public,http=http)
+        assert created==[] and not (Path(config.state_dir)/'journal.sqlite').exists()

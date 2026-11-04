@@ -19,6 +19,10 @@ class L2Credentials:
 UNKNOWN = 'UNKNOWN'
 
 
+class ConditionalIdentityUnavailable(ValueError):
+    """Authored observational identity failure, distinct from a balance failure."""
+
+
 class _Excluded(ValueError):
     """Only application-authored, identity-free reasons may reach the summary."""
 
@@ -142,10 +146,11 @@ class ReadOnlySDK:
             raise _Excluded(f'中间价 {midpoint} 超出 0.10–0.90')
         if not recovery and m.liquidity_num < 1000:
             raise _Excluded('流动性低于 1000')
-        # Typed Gamma omits in_play; absence is never interpreted as false.
+        # A successful CLOB object may omit in_play; explicit non-false remains excluded.
         response = self.__http.get('https://clob.polymarket.com/markets/' + cid)
         response.raise_for_status()
-        if response.json().get('in_play') is not False:
+        state=response.json()
+        if not isinstance(state,dict) or ('in_play' in state and state['in_play'] is not False):
             raise _Excluded('进行中状态未验证')
         books = []
         for token in m.tokens:
@@ -259,12 +264,26 @@ class ReadOnlySDK:
         """Fresh selected-market quantities, from verified tokens and authenticated GETs."""
         from decimal import Decimal
         from polymarket.models.clob.account import BalanceAllowance
-        if self.__credentials is None or type(self.__credentials.signature_type) is not int or self.__credentials.signature_type!=1:
-            raise ValueError('conditional identity unavailable')
-        rows=self.read_fixed_market(now,condition_id)
-        tokens=tuple(token.token_id for token in rows[0]['plan'].market.tokens)
-        if len(tokens)!=2 or len(set(tokens))!=2 or not all(isinstance(t,str) and t.isdecimal() for t in tokens):
-            raise ValueError('conditional tokens unavailable')
+        import json,re
+        from polymarket._internal.wallet import classify_wallet_type
+        from polymarket.environments import PRODUCTION
+        try:
+            c=self.__credentials
+            if (c is None or type(c.signature_type) is not int or c.signature_type!=1
+                    or classify_wallet_type(signer=c.signer_address,wallet=c.wallet_address,config=PRODUCTION.wallet_derivation)!='POLY_PROXY'
+                    or not isinstance(condition_id,str) or not re.fullmatch('0x[0-9a-fA-F]{64}',condition_id)):
+                raise ValueError()
+            rows=self.__audit.fixed_market_wires(condition_id)
+            if len(rows)!=1 or not isinstance(rows[0],dict) or rows[0].get('conditionId')!=condition_id:raise ValueError()
+            wire=rows[0];tokens=wire.get('clobTokenIds');outcomes=wire.get('outcomes')
+            if isinstance(tokens,str):tokens=json.loads(tokens)
+            if isinstance(outcomes,str):outcomes=json.loads(outcomes)
+            if (not isinstance(tokens,list) or len(tokens)!=2 or outcomes!=['Yes','No']
+                    or not all(isinstance(t,str) and re.fullmatch('[0-9]+',t) for t in tokens)
+                    or len(set(tokens))!=2):raise ValueError()
+            tokens=tuple(tokens)
+        except Exception:
+            raise ConditionalIdentityUnavailable('CONDITIONAL_IDENTITY_UNAVAILABLE') from None
         quantities={}
         for token in tokens:
             raw=self.__account_get('/balance-allowance',now,dict(asset_type='CONDITIONAL',token_id=token,signature_type='1'))

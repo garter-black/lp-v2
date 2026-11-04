@@ -15,6 +15,10 @@ def run(argv, timeout=15):
     if argv[:1]==['systemctl']:
         from lp_v2.live_control.privileges import systemctl
         return systemctl(argv,timeout=timeout)
+    if argv[:1]==['git']:
+        return subprocess.run(argv,text=True,capture_output=True,timeout=timeout,check=False,
+            env=dict(PATH='/usr/sbin:/usr/bin:/sbin:/bin',LANG='C',GIT_CONFIG_NOSYSTEM='1',
+                GIT_CONFIG_GLOBAL='/dev/null',GIT_NO_REPLACE_OBJECTS='1',GIT_OPTIONAL_LOCKS='0'))
     return subprocess.run(argv,text=True,capture_output=True,timeout=timeout,check=False)
 
 
@@ -75,9 +79,12 @@ def account_checks(profile):
         try:
             result.update(sdk.read_account_readiness(datetime.now(UTC),capital_usdc=profile['trading']['capital_usdc'],identity=identity,relayer=relayer))
             try:
+                from lp_v2.readonly_sdk import ConditionalIdentityUnavailable
                 from lp_v2.live_control.handoff import inventory_handoff
                 quantities=sdk.read_conditional_inventory(datetime.now(UTC),profile['trading']['market_condition_id'])
                 result['inventory_handoff']=inventory_handoff(profile,quantities)
+            except ConditionalIdentityUnavailable:
+                result['inventory_handoff']=fact('UNKNOWN','CONDITIONAL_IDENTITY_UNAVAILABLE')
             except Exception:
                 result['inventory_handoff']=fact('UNKNOWN','CONDITIONAL_BALANCE_UNAVAILABLE')
         finally:
@@ -107,7 +114,7 @@ def prepare(request):
         return dict(status='UNKNOWN',reason='PREPARATION_INVALID')
     from lp_v2.live_control.invocation import binding
     try:
-        binding(profile,system_properties(profile['services']['live_unit']),expected_env(profile),run)
+        binding(profile,system_properties(profile['services']['live_unit'],prove_exec=True),expected_env(profile),run)
     except Exception:
         return dict(status='UNKNOWN',reason='EFFECTIVE_SERVICE_CONTRACT')
     from lp_v2.live_control.workflow import normalize_report
@@ -368,25 +375,32 @@ def expected_env(profile):
     return dict(LP_V2_CAPITAL_USDC=profile['trading']['capital_usdc'],LP_V2_MARKET=profile['trading']['market_condition_id'],LP_V2_CODE_SHA=profile['release']['expected_sha'])
 
 
-def system_properties(unit):
-    from lp_v2.live_control.privileges import PROPERTIES
+def system_properties(unit,*,prove_exec=False):
+    from lp_v2.live_control.privileges import PROPERTIES, empty_exec_property
+    if unit not in ('lp-v2.service','lp-v2-live.service'):raise ValueError('foreign unit')
     response=run(['systemctl','show',unit,PROPERTIES])
     if response.returncode!=0: raise ValueError()
-    return dict(line.split('=',1) for line in response.stdout.splitlines() if '=' in line)
+    values=dict(line.split('=',1) for line in response.stdout.splitlines() if '=' in line)
+    for key in ('ExecStartPre','ExecStartPost','ExecCondition','ExecStopPost','ExecReload'):
+        if prove_exec and key not in values:
+            empty_exec_property(unit,key)
+            values[key]=''
+    return values
 
 
 def filesystem_checks(profile):
     checks={}
     root=Path(profile['release']['root']); current=root/'current'
     try:
-        listing=run(['git','-C',str(root/'repo'),'ls-tree','-r','--name-only',profile['release']['expected_sha'],'src/lp_v2'])
+        from lp_v2.live_control.source import read
+        listing=read(profile,['ls-tree','-r','--name-only',profile['release']['expected_sha'],'src/lp_v2'],run)
         paths=listing.stdout.splitlines()
         if listing.returncode or not paths: raise ValueError()
         import importlib.util
         good=True
         for name in paths:
             if not name.endswith('.py'): continue
-            reference=run(['git','-C',str(root/'repo'),'show',profile['release']['expected_sha']+':'+name])
+            reference=read(profile,['show',profile['release']['expected_sha']+':'+name],run)
             if reference.returncode: raise ValueError()
             module=name[4:-3].replace('/','.')
             if module.endswith('.__init__'): module=module[:-9]
@@ -414,7 +428,7 @@ def filesystem_checks(profile):
     except Exception:
         checks['state_identity']=fact('UNKNOWN','STATE_IDENTITY_UNAVAILABLE')
     try:
-        live=system_properties(profile['services']['live_unit'])
+        live=system_properties(profile['services']['live_unit'],prove_exec=True)
         readonly=system_properties(profile['services']['readonly_unit'])
         valid=(live.get('User')=='lp-v2' and str(current/'deploy/run-live') in live.get('ExecStart','')
             and str(current/'.venv/bin/lp-v2') in live.get('ExecStop','') and ' stop ' in live.get('ExecStop','')
@@ -440,7 +454,8 @@ def filesystem_checks(profile):
         if not free and readonly.get('MainPID') not in ('0',None) and readonly.get('ActiveState')=='active':
             # A listening port must be attributable to the exact readonly process.
             listeners=run(['ss','-H','-ltnp','sport = :8765'])
-            owned_readonly=listeners.returncode==0 and ('pid='+readonly['MainPID']+',') in listeners.stdout
+            from lp_v2.live_control.listener import owned
+            owned_readonly=owned(profile,readonly,listeners)
         checks['port']=fact('PASS' if free or owned_readonly else 'FAIL','PORT_OWNER')
     except Exception:
         for name in ('service','single_executor','port'):
@@ -526,7 +541,7 @@ def start(request):
     previous=existing.get('run_id')
     seq=max((seq for seq,_ in journal_rows(profile,'occupation')),default=0) if (state/'journal.sqlite').exists() else 0
     from lp_v2.live_control.invocation import binding,file_snapshot
-    invocation=dict(argv=binding(profile,system_properties(profile['services']['live_unit']),env_values(profile),run),
+    invocation=dict(argv=binding(profile,system_properties(profile['services']['live_unit'],prove_exec=True),env_values(profile),run),
                     snapshot=file_snapshot(profile))
     record=dict(profile=profile,run_id=None,started_at=now(),journal_seq=seq,action_id=request['action_id'],invocation=invocation)
     atomic_json(state/'live-control-run.json',record)
@@ -594,7 +609,10 @@ def safe_public(profile,raw):
     raw=raw if isinstance(raw,dict) else {}
     result=dict(scope='public_market' if raw.get('scope')=='public_market' else 'UNKNOWN',
                 status=raw.get('status') if raw.get('status') in ('PASS','BLOCKED','UNKNOWN') else 'UNKNOWN',
-                checks=public_details(raw.get('checks')))
+                checks=public_details(raw.get('checks'),raw.get('as_of')))
+    if (raw.get('code_sha')!=profile['release']['expected_sha'] or raw.get('market')!=profile['trading']['market_condition_id']
+            or raw.get('capital_usdc')!=profile['trading']['capital_usdc']):
+        result['checks']['opening_eligibility'].pop('details',None)
     for key,pattern in [('code_sha',r'[0-9a-f]{40}'),('market',r'0x[0-9a-fA-F]{64}')]:
         value=raw.get(key)
         if isinstance(value,str) and re.fullmatch(pattern,value):result[key]=value
